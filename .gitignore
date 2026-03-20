@@ -1,0 +1,46 @@
+# Credentials & Config (มีข้อมูลลับ)
+User*.json
+user*.json
+!config/*.example.json
+User1.json
+User2.json
+User3.json
+User4.json
+User5.json
+User6.json
+User7.json
+User8.json
+User4Worker.json
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Dynamic config data (มีข้อมูลจาก Web Admin)
+data/*.json
+!data/.gitkeep
+
+# Dependencies
+node_modules/
+
+# Playwright
+playwright-report/
+playwright/.cache/
+test-results/
+blob-report/
+trace/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*

@@ -4,12 +4,28 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "playwright test --headed --project=chromium"
+    "start": "node server/index.js",
+    "dev": "node server/index.js",
+    "migrate": "node scripts/migrate-from-json.js",
+    "migrate:credentials": "node scripts/add-credentials-columns.js",
+    "migrate:fix-4worker": "node scripts/remove-duplicate-4worker.js",
+    "migrate:user-groups": "node scripts/migrate-user-groups.js",
+    "migrate:fb-token": "node scripts/migrate-add-fb-token.js",
+    "migrate:assignment-job-ids": "node scripts/migrate-assignment-job-ids.js",
+    "migrate:post-logs": "node scripts/migrate-post-logs.js",
+    "test": "playwright test --headed --project=chromium",
+    "test:postAll": "playwright test postAll --headed --project=Google Chrome",
+    "test:post": "playwright test postAll --headed --project=Google Chrome"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "pg": "^8.20.0"
+  },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
     "@types/node": "^25.2.3"

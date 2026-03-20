@@ -1,0 +1,28 @@
+{
+  "account": {
+    "email": "YOUR_EMAIL_OR_PHONE",
+    "password": "YOUR_PASSWORD",
+    "poster_name": "User 4",
+    "sheet_url": "",
+    "blacklist_groups": []
+  },
+  "browser_config": { "profile_name": "Default" },
+  "post_settings": {
+    "delay_between_posts_min": 10,
+    "delay_between_posts_max": 20
+  },
+  "content": {
+    "posts": [
+      {
+        "title": "ชื่อตำแหน่งงาน",
+        "owner": "ชื่อผู้ติดต่อ",
+        "company": "ชื่อบริษัท",
+        "jobType": "ประเภทงาน",
+        "apply_link": "",
+        "caption": "รายละเอียดงาน...",
+        "comment_reply": "ข้อความตอบคอมเมนต์",
+        "groupID": ["GROUP_ID_1", "GROUP_ID_2"]
+      }
+    ]
+  }
+}

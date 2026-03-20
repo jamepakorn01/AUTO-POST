@@ -1,0 +1,32 @@
+{
+  "account": {
+    "email": "YOUR_EMAIL_OR_PHONE",
+    "password": "YOUR_PASSWORD",
+    "poster_name": "ชื่อที่แสดงในโพสต์",
+    "sheet_url": "https://script.google.com/macros/s/YOUR_APPS_SCRIPT_ID/exec",
+    "blacklist_groups": ["GROUP_ID_TO_SKIP_APPLY_LINK"]
+  },
+  "browser_config": {
+    "profile_name": "Default"
+  },
+  "post_settings": {
+    "delay_between_posts_min": 8,
+    "delay_between_posts_max": 10,
+    "batch_size": 10,
+    "break_time_min": 200,
+    "break_time_max": 400
+  },
+  "content": {
+    "posts": [
+      {
+        "title": "ชื่อตำแหน่งงาน",
+        "owner": "ชื่อผู้ติดต่อ",
+        "company": "ชื่อบริษัท",
+        "apply_link": "https://your-shortlink.com/xxx",
+        "caption": "รายละเอียดงาน...",
+        "comment_reply": "ข้อความตอบคอมเมนต์",
+        "groupID": ["GROUP_ID_1", "GROUP_ID_2"]
+      }
+    ]
+  }
+}

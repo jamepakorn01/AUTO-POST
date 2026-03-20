@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AUTO-POST Admin</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: { 50: '#f0fdf4', 100: '#dcfce7', 500: '#22c55e', 600: '#16a34a', 700: '#15803d' },
+            surface: { 50: '#f8fafc', 100: '#f1f5f9', 200: '#e2e8f0' },
+            ink: { 400: '#94a3b8', 500: '#64748b', 600: '#475569', 700: '#334155', 800: '#1e293b', 900: '#0f172a' }
+          },
+          fontFamily: { sans: ['Inter', 'IBM Plex Sans Thai', 'system-ui', 'sans-serif'] },
+          spacing: { 18: '4.5rem', 22: '5.5rem' },
+          borderRadius: { xl: '0.75rem', '2xl': '1rem' }
+        }
+      }
+    }
+  </script>
+  <style>
+    :root {
+      --color-bg: #f8fafc;
+      --color-surface: #ffffff;
+      --color-border: #e2e8f0;
+      --color-border-focus: #22c55e;
+      --color-text: #1e293b;
+      --color-text-muted: #64748b;
+      --color-text-subtle: #94a3b8;
+      --color-primary: #16a34a;
+      --color-primary-hover: #15803d;
+      --color-danger: #dc2626;
+      --color-danger-hover: #b91c1c;
+      --radius-sm: 0.5rem;
+      --radius-md: 0.625rem;
+      --radius-lg: 0.75rem;
+      --radius-xl: 1rem;
+      --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+      --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.07), 0 2px 4px -2px rgb(0 0 0 / 0.05);
+      --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.08), 0 4px 6px -4px rgb(0 0 0 / 0.05);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Inter', 'IBM Plex Sans Thai', system-ui, sans-serif;
+      background: var(--color-bg);
+      color: var(--color-text);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* Tabs */
+    .tab-btn {
+      position: relative;
+      padding: 0.75rem 0;
+      margin: 0 0.25rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--color-text-muted);
+      transition: color 0.15s ease;
+    }
+    .tab-btn:hover { color: var(--color-primary); }
+    .tab-btn.tab-active {
+      color: var(--color-primary);
+      font-weight: 600;
+    }
+    .tab-btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+    .tab-btn.tab-active::after {
+      content: '';
+      position: absolute;
+      bottom: -1px;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: var(--color-primary);
+      border-radius: 2px 2px 0 0;
+    }
+
+    /* Cards */
+    .card {
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* Buttons */
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.5rem 1rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: white;
+      background: var(--color-primary);
+      border-radius: var(--radius-md);
+      transition: background 0.15s ease, transform 0.05s ease;
+    }
+    .btn-primary:hover:not(:disabled) { background: var(--color-primary-hover); }
+    .btn-primary:active:not(:disabled) { transform: scale(0.98); }
+    .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+    .btn-primary:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+
+    .btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.5rem 1rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: var(--color-text);
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .btn-secondary:hover { background: var(--color-bg); border-color: var(--color-text-subtle); }
+    .btn-secondary:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+
+    .btn-danger {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.5rem 1rem;
+      font-size: 0.875rem;
+      font-weight: 500;
+      color: white;
+      background: var(--color-danger);
+      border-radius: var(--radius-md);
+      transition: background 0.15s ease;
+    }
+    .btn-danger:hover { background: var(--color-danger-hover); }
+
+    /* Inputs */
+    .input {
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.875rem;
+      line-height: 1.5;
+      color: var(--color-text);
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .input::placeholder { color: var(--color-text-subtle); }
+    .input:focus {
+      outline: none;
+      border-color: var(--color-border-focus);
+      box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15);
+    }
+    textarea.input { min-height: 100px; resize: vertical; }
+
+    /* Modal */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+      background: rgba(15, 23, 42, 0.4);
+      backdrop-filter: blur(4px);
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+    .modal-backdrop.hidden { display: none !important; }
+    .modal-panel {
+      margin: auto;
+      width: 100%;
+      max-width: 28rem;
+      max-height: calc(100vh - 3rem);
+      min-height: 0;
+      background: var(--color-surface);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow-lg);
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+    .modal-panel-inner { padding: 1.5rem; }
+
+    /* List rows */
+    .list-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.875rem 1rem;
+      border-bottom: 1px solid var(--color-border);
+      transition: background 0.1s ease;
+    }
+    .list-row:last-child { border-bottom: none; }
+    .list-row:hover { background: var(--color-bg); }
+    .list-row .list-row-actions { opacity: 0.7; }
+    .list-row:hover .list-row-actions { opacity: 1; }
+
+    /* Run Post CTA */
+    .run-cta {
+      background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+      border: 1px solid rgba(34, 197, 94, 0.2);
+    }
+
+    @media (max-width: 640px) {
+      .tabs-nav { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+      .tabs-nav::-webkit-scrollbar { display: none; }
+    }
+  </style>
+</head>
+<body class="min-h-screen">
+  <div class="min-h-screen">
+    <!-- Header -->
+    <header class="border-b border-slate-200 bg-white/80 backdrop-blur-sm sticky top-0 z-40">
+      <div class="max-w-5xl mx-auto px-4 sm:px-6 py-4 sm:py-5">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div>
+            <h1 class="text-xl sm:text-2xl font-semibold tracking-tight text-slate-900">AUTO-POST Admin</h1>
+            <p class="text-sm text-slate-500 mt-0.5">จัดการ Users, Groups, Jobs, Templates และ Assignments</p>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main -->
+    <main class="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+      <!-- Run Post CTA -->
+      <div class="run-cta rounded-xl p-4 sm:p-5 mb-6 sm:mb-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h2 class="text-sm font-semibold text-slate-800">เริ่มโพสต์</h2>
+          <p class="text-sm text-slate-600 mt-0.5">โพสต์ตาม Assignments ที่กำหนดไว้</p>
+        </div>
+        <button id="btn-run-post" class="btn-primary px-5 py-2.5 shrink-0 w-full sm:w-auto">▶ เริ่มโพสต์</button>
+      </div>
+
+      <!-- Tabs -->
+      <nav class="tabs-nav flex gap-1 border-b border-slate-200 mb-6 -mx-4 sm:mx-0 px-4 sm:px-0 overflow-x-auto">
+        <button data-tab="users" class="tab-btn shrink-0 tab-active">Users</button>
+        <button data-tab="groups" class="tab-btn shrink-0">Groups</button>
+        <button data-tab="jobs" class="tab-btn shrink-0">Jobs</button>
+        <button data-tab="templates" class="tab-btn shrink-0">Templates</button>
+        <button data-tab="assignments" class="tab-btn shrink-0">Assignments</button>
+        <button data-tab="logs" class="tab-btn shrink-0">Logs</button>
+      </nav>
+
+      <!-- List -->
+      <div class="card overflow-hidden">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 p-4 sm:p-6 border-b border-slate-200">
+          <h2 class="text-base font-semibold text-slate-800" id="list-title">Users</h2>
+          <button id="btn-add" class="btn-primary text-sm shrink-0 w-full sm:w-auto">+ เพิ่ม</button>
+        </div>
+        <div id="list-container" class="min-h-[240px]"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Modal: เพิ่ม/แก้ไข -->
+  <div id="form-modal" class="modal-backdrop hidden" onclick="if(event.target===this)document.getElementById('modal-close').click()">
+    <div class="modal-panel" onclick="event.stopPropagation()">
+      <div class="modal-panel-inner">
+        <div class="flex justify-between items-start gap-4 mb-6">
+          <h3 class="text-lg font-semibold text-slate-900" id="form-title">เพิ่ม User</h3>
+          <button id="modal-close" type="button" class="shrink-0 w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition text-xl leading-none">&times;</button>
+        </div>
+        <form id="crud-form" class="space-y-4"></form>
+        <div id="form-actions" class="mt-6 flex flex-wrap gap-2"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: ยืนยันลบ -->
+  <div id="delete-modal" class="modal-backdrop hidden" onclick="if(event.target===this)document.getElementById('delete-cancel').click()">
+    <div class="modal-panel" onclick="event.stopPropagation()">
+      <div class="modal-panel-inner">
+        <h3 class="text-lg font-semibold text-slate-900 mb-2">ยืนยันการลบ</h3>
+        <p class="text-slate-600 mb-6">ต้องการลบ <span id="delete-desc" class="font-medium text-slate-800">รายการนี้</span> ใช่หรือไม่?</p>
+        <div class="flex gap-2 justify-end">
+          <button id="delete-cancel" type="button" class="btn-secondary">ยกเลิก</button>
+          <button id="delete-confirm" type="button" class="btn-danger">ลบ</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
