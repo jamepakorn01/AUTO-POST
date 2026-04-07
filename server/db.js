@@ -1564,6 +1564,107 @@ async function updateScheduleByRunId(runId, status, lastError = null) {
   return rowCount > 0;
 }
 
+// --- Remote post worker queue ---
+async function ensurePostRunQueueTable() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS post_run_queue (
+      id VARCHAR(50) PRIMARY KEY,
+      assignment_ids JSONB NOT NULL DEFAULT '[]',
+      status VARCHAR(30) NOT NULL DEFAULT 'queued', -- queued | running | completed | failed | cancelled
+      run_id VARCHAR(50),
+      requested_by VARCHAR(255),
+      worker_id VARCHAR(255),
+      message TEXT,
+      error TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      started_at TIMESTAMPTZ,
+      finished_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+}
+
+async function enqueuePostRunJob(data = {}) {
+  await ensurePostRunQueueTable();
+  const id = generateId();
+  const assignmentIds = normalizeIdArray(data.assignment_ids);
+  await query(
+    `INSERT INTO post_run_queue (id, assignment_ids, status, requested_by, message)
+     VALUES ($1, $2::jsonb, 'queued', $3, $4)`,
+    [id, JSON.stringify(assignmentIds), data.requested_by || null, data.message || 'queued from web']
+  );
+  const { rows } = await query(`SELECT * FROM post_run_queue WHERE id = $1`, [id]);
+  return rows[0] || null;
+}
+
+async function claimNextPostRunJob(workerId, runId) {
+  await ensurePostRunQueueTable();
+  const wid = String(workerId || '').trim() || 'worker';
+  const rid = String(runId || '').trim() || null;
+  const { rows } = await query(
+    `WITH next AS (
+       SELECT id
+       FROM post_run_queue
+       WHERE status = 'queued'
+       ORDER BY created_at ASC
+       LIMIT 1
+       FOR UPDATE SKIP LOCKED
+     )
+     UPDATE post_run_queue q
+     SET status = 'running',
+         worker_id = $1,
+         run_id = COALESCE(q.run_id, $2),
+         started_at = NOW(),
+         updated_at = NOW(),
+         message = 'worker accepted job'
+     FROM next
+     WHERE q.id = next.id
+     RETURNING q.*`,
+    [wid, rid]
+  );
+  if (rows.length === 0) return null;
+  return rows[0];
+}
+
+async function completePostRunJob(id, data = {}) {
+  await ensurePostRunQueueTable();
+  const ok = !!data.ok;
+  const status = ok ? 'completed' : 'failed';
+  const { rows } = await query(
+    `UPDATE post_run_queue
+     SET status = $2,
+         run_id = COALESCE($3, run_id),
+         message = COALESCE($4, message),
+         error = $5,
+         finished_at = NOW(),
+         updated_at = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [String(id || ''), status, data.run_id || null, data.message || null, data.error || null]
+  );
+  return rows[0] || null;
+}
+
+async function getPostRunQueueSummary() {
+  await ensurePostRunQueueTable();
+  const [countsRes, latestRes] = await Promise.all([
+    query(
+      `SELECT
+         COUNT(*) FILTER (WHERE status='queued')::int AS queued,
+         COUNT(*) FILTER (WHERE status='running')::int AS running
+       FROM post_run_queue`,
+      []
+    ),
+    query(`SELECT * FROM post_run_queue ORDER BY created_at DESC LIMIT 1`, []),
+  ]);
+  const c = countsRes.rows[0] || { queued: 0, running: 0 };
+  return {
+    queued: Number(c.queued) || 0,
+    running: Number(c.running) || 0,
+    latest: latestRes.rows[0] || null,
+  };
+}
+
 // --- Config for Bot ---
 async function getDynamicConfig() {
   const [users, groups, jobs, assignments] = await Promise.all([
@@ -1602,6 +1703,7 @@ async function initSchema() {
   await ensurePostLogsGroupNameText();
   await ensureUsersContactPhoneColumn();
   await ensureAssignmentsJobIdsColumn().catch(() => {});
+  await ensurePostRunQueueTable().catch(() => {});
 }
 
 /** Health check: DB reachable */
@@ -1677,6 +1779,11 @@ module.exports = {
   updateSchedule,
   deleteSchedule,
   updateScheduleByRunId,
+  ensurePostRunQueueTable,
+  enqueuePostRunJob,
+  claimNextPostRunJob,
+  completePostRunJob,
+  getPostRunQueueSummary,
   generateRunId,
   getDynamicConfig,
   initSchema,

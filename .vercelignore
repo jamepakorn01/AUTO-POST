@@ -1,0 +1,13 @@
+node_modules
+.git
+.auth
+playwright-report
+test-results
+data
+artifacts
+agent-tools
+*.log
+public/app.origin-main.js
+scripts/patch-*.js
+scripts/fix-*.js
+scripts/normalize-*.js

@@ -3875,8 +3875,12 @@ document.getElementById('btn-run-post').addEventListener('click', async () => {
   try {
     btn.disabled = true;
     btn.textContent = 'กำลังเริ่ม...';
-    await runPost();
-    alert('กำลังสั่งเปิด Google Chrome สำหรับโพสต์\n\nถ้าไม่มีหน้าต่างขึ้น: ต้องติดตั้ง Google Chrome ในเครื่อง และดู Terminal ที่รัน npm start ว่ามี error หรือไม่');
+    const out = await runPost();
+    if (out?.queued) {
+      alert('รับคิวโพสต์แล้ว\n\nถ้าต้องการให้ Chrome เด้งบนเครื่องคุณ ให้เปิด worker ที่เครื่องจริง:\n`npm run worker:post`\n(ต้องตั้ง WORKER_API_BASE และ POST_WORKER_TOKEN ใน .env)');
+    } else {
+      alert('กำลังสั่งเปิด Google Chrome สำหรับโพสต์\n\nถ้าไม่มีหน้าต่างขึ้น: ต้องติดตั้ง Google Chrome ในเครื่อง และดู Terminal ที่รัน npm start ว่ามี error หรือไม่');
+    }
   } catch (e) {
     alert('เกิดข้อผิดพลาด: ' + e.message);
   } finally {

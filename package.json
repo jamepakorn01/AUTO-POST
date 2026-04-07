@@ -15,6 +15,7 @@
     "migrate:assignment-job-ids": "node scripts/migrate-assignment-job-ids.js",
     "migrate:assignment-job-id-nullable": "node scripts/drop-assignment-job-id-not-null.js",
     "migrate:post-logs": "node scripts/migrate-post-logs.js",
+    "worker:post": "node scripts/post-remote-worker.js",
     "test": "playwright test --headed --project=\"Google Chrome\"",
     "test:logic": "playwright test tests/collectPostComments.logic.spec.ts --project=ChromiumCollect",
     "test:postAll": "playwright test postAll --headed --project=Google Chrome",

@@ -846,6 +846,8 @@ app.delete('/api/schedules/:id', async (req, res) => {
 
 // --- API: Run Post Bot ---
 let postProcess = null;
+const USE_REMOTE_POST_WORKER = process.env.POST_REMOTE_WORKER === '1' || !!process.env.VERCEL;
+const POST_WORKER_TOKEN = String(process.env.POST_WORKER_TOKEN || '').trim();
 let runStatus = {
   running: false,
   paused: false,
@@ -969,6 +971,29 @@ async function resumeProcess(pid) {
 app.post('/api/run/post', (req, res) => {
   try {
     const assignmentIds = req.body?.assignment_ids;
+    if (USE_REMOTE_POST_WORKER) {
+      const ids = Array.isArray(assignmentIds) ? assignmentIds : [];
+      db.enqueuePostRunJob({
+        assignment_ids: ids,
+        requested_by: req.ip || 'web',
+        message: ids.length > 0 ? `queued ${ids.length} assignments` : 'queued all assignments',
+      }).then(() => {
+        runStatus = {
+          ...runStatus,
+          running: false,
+          paused: false,
+          started_at: new Date().toISOString(),
+          finished_at: null,
+          message: 'รับคิวโพสต์แล้ว รอเครื่อง Worker รับงาน...',
+        };
+      }).catch(() => {});
+      return res.json({
+        ok: true,
+        queued: true,
+        message: 'รับคิวโพสต์แล้ว (รอ Worker บนเครื่องคุณรับงาน)',
+        status: runStatus,
+      });
+    }
     startPostRun(Array.isArray(assignmentIds) ? assignmentIds : []);
     res.json({ ok: true, message: 'กำลังเปิด Browser สำหรับโพสต์ - กรุณา Login Facebook', status: runStatus });
   } catch (err) {
@@ -1033,6 +1058,26 @@ app.post('/api/run/post/cancel', async (req, res) => {
 });
 
 app.get('/api/run/status', async (req, res) => {
+  if (USE_REMOTE_POST_WORKER) {
+    const q = await db.getPostRunQueueSummary().catch(() => ({ queued: 0, running: 0, latest: null }));
+    const latest = q.latest || {};
+    const running = Number(q.running || 0) > 0;
+    const queued = Number(q.queued || 0);
+    return res.json({
+      ...runStatus,
+      running,
+      paused: false,
+      queued_count: queued,
+      queue_latest: latest,
+      message: running
+        ? (latest.message || 'Worker กำลังโพสต์งาน...')
+        : queued > 0
+          ? `มีคิวรอ ${queued} งาน (รอ Worker บนเครื่องคุณ)`
+          : (latest.message || 'ยังไม่เคยเริ่มโพสต์'),
+      recent_logs: [],
+      user_runs: [],
+    });
+  }
   const base = {
     ...runStatus,
     running: !!postProcess,
@@ -1112,6 +1157,60 @@ app.get('/api/run/collect-status', async (req, res) => {
     return res.json({ ...base, runs: runsWithLogs });
   }
   res.json(runsWithLogs[0] || base);
+});
+
+function requirePostWorkerToken(req, res) {
+  if (!USE_REMOTE_POST_WORKER) return true;
+  if (!POST_WORKER_TOKEN) {
+    res.status(503).json({ error: 'POST_WORKER_TOKEN not configured on server' });
+    return false;
+  }
+  const token = String(req.get('x-worker-token') || '').trim();
+  if (!token || token !== POST_WORKER_TOKEN) {
+    res.status(403).json({ error: 'Forbidden worker token' });
+    return false;
+  }
+  return true;
+}
+
+app.post('/api/worker/post/claim', async (req, res) => {
+  try {
+    if (!requirePostWorkerToken(req, res)) return;
+    const workerId = String(req.body?.worker_id || req.get('x-worker-id') || '').trim() || 'worker';
+    const runId = db.generateRunId();
+    const job = await db.claimNextPostRunJob(workerId, runId);
+    if (!job) return res.json({ ok: true, job: null });
+    return res.json({ ok: true, job });
+  } catch (e) {
+    return res.status(500).json({ error: e.message || String(e) });
+  }
+});
+
+app.post('/api/worker/post/complete', async (req, res) => {
+  try {
+    if (!requirePostWorkerToken(req, res)) return;
+    const id = String(req.body?.job_id || '').trim();
+    if (!id) return res.status(400).json({ error: 'job_id required' });
+    const row = await db.completePostRunJob(id, {
+      ok: !!req.body?.ok,
+      run_id: req.body?.run_id || null,
+      message: req.body?.message || null,
+      error: req.body?.error || null,
+    });
+    if (!row) return res.status(404).json({ error: 'job not found' });
+    runStatus = {
+      ...runStatus,
+      run_id: row.run_id || runStatus.run_id,
+      running: false,
+      paused: false,
+      finished_at: new Date().toISOString(),
+      message: row.status === 'completed' ? 'โพสต์งานเสร็จแล้ว (ผ่าน Worker)' : 'โพสต์งานล้มเหลว (ผ่าน Worker)',
+      error: row.error || null,
+    };
+    return res.json({ ok: true, job: row });
+  } catch (e) {
+    return res.status(500).json({ error: e.message || String(e) });
+  }
 });
 
 app.post('/api/run/collect-comments/pause', async (req, res) => {
