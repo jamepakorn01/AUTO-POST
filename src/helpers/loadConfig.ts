@@ -10,6 +10,10 @@ import type {
   DynamicAssignment,
 } from '../types/config';
 
+const DEFAULT_SHEET_URL =
+  process.env.DEFAULT_SHEET_URL ||
+  'https://script.google.com/macros/s/AKfycbzqB97xnjUC7QZwTq2QnXUI372lxsO9acZTVxXJ3HF9G-T71h-HqccaNyMR6E612MYQ/exec';
+
 /**
  * โหลด config โดยลอง lowercase ก่อน (แนะนำสำหรับ cross-platform)
  * แล้ว fallback เป็น PascalCase ถ้าไม่เจอ
@@ -69,14 +73,14 @@ async function loadMasterConfigFromDb(userId: number): Promise<MasterConfig> {
     groupID: string[];
   }> = [];
 
-  const fbGroupIds = (user.group_ids || [])
-    .map((gid: string) => groupMap.get(gid))
-    .filter((id): id is string => !!id);
-
   const jobIdsFromAssignment = (a: { job_ids?: string[]; job_id?: string }) =>
     Array.isArray(a.job_ids) && a.job_ids.length > 0 ? a.job_ids : (a.job_id ? [a.job_id] : []);
+  const assignmentGroupIds = (a: { group_ids?: string[] }) => (Array.isArray(a.group_ids) ? a.group_ids : []);
 
   for (const a of assignments) {
+    const fbGroupIds = (assignmentGroupIds(a).length > 0 ? assignmentGroupIds(a) : (user.group_ids || []))
+      .map((gid: string) => groupMap.get(gid))
+      .filter((id): id is string => !!id);
     for (const jid of jobIdsFromAssignment(a)) {
       const job = await db.getJobById(jid);
       if (!job) continue;
@@ -102,7 +106,7 @@ async function loadMasterConfigFromDb(userId: number): Promise<MasterConfig> {
       email,
       password,
       poster_name: user.poster_name || user.name || `User ${userId}`,
-      sheet_url: user.sheet_url || undefined,
+      sheet_url: DEFAULT_SHEET_URL || user.sheet_url || undefined,
       blacklist_groups: user.blacklist_groups || [],
     },
     post_settings: user.post_settings || {},
@@ -144,7 +148,7 @@ function workerToMaster(worker: WorkerConfig): MasterConfig {
     account: {
       ...worker.account,
       poster_name: worker.account?.poster_name || 'User 4',
-      sheet_url: worker.account?.sheet_url || '',
+      sheet_url: worker.account?.sheet_url || DEFAULT_SHEET_URL || '',
       blacklist_groups: worker.account?.blacklist_groups || [],
     },
     post_settings: worker.post_settings,
@@ -167,15 +171,15 @@ async function loadWorkerConfigFromDb(): Promise<WorkerConfig> {
   const groups = await db.getGroups();
   const groupMap = new Map(groups.map((g: { id: string; fb_group_id: string }) => [g.id, g.fb_group_id]));
 
-  const fbGroupIds = (user.group_ids || [])
-    .map((gid: string) => groupMap.get(gid))
-    .filter((id): id is string => !!id);
-
   const jobIdsFromAssignment = (a: { job_ids?: string[]; job_id?: string }) =>
     Array.isArray(a.job_ids) && a.job_ids.length > 0 ? a.job_ids : (a.job_id ? [a.job_id] : []);
+  const assignmentGroupIds = (a: { group_ids?: string[] }) => (Array.isArray(a.group_ids) ? a.group_ids : []);
 
   const tasks: WorkerConfig['tasks'] = [];
   for (const a of assignments) {
+    const fbGroupIds = (assignmentGroupIds(a).length > 0 ? assignmentGroupIds(a) : (user.group_ids || []))
+      .map((gid: string) => groupMap.get(gid))
+      .filter((id): id is string => !!id);
     for (const jid of jobIdsFromAssignment(a)) {
       const job = await db.getJobById(jid);
       if (!job) continue;
@@ -204,7 +208,7 @@ async function loadWorkerConfigFromDb(): Promise<WorkerConfig> {
       email,
       password,
       poster_name: user.poster_name || user.name || 'User 4',
-      sheet_url: user.sheet_url || undefined,
+      sheet_url: DEFAULT_SHEET_URL || user.sheet_url || undefined,
     },
     post_settings: (user.post_settings as WorkerConfig['post_settings']) || {
       delay_between_posts_min: 10,

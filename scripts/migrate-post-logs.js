@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS ${schemaName}.post_logs (
   owner VARCHAR(255),
   job_title VARCHAR(500),
   company VARCHAR(255),
-  group_name VARCHAR(255),
+  group_name TEXT,
   member_count VARCHAR(50) DEFAULT '0',
   post_link TEXT,
   post_status VARCHAR(50),

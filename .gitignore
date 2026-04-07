@@ -44,3 +44,8 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Bot failure artifacts (screenshots / HTML snapshots)
+artifacts/
+server/logs/
+.vercel

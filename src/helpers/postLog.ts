@@ -21,16 +21,25 @@ export interface PostLogData {
   group_id?: string;
 }
 
+const POST_LOG_FETCH_MS = Math.min(60000, Math.max(3000, Number(process.env.POST_LOG_FETCH_MS) || 12000));
+
 export async function postLog(data: PostLogData): Promise<void> {
   const runId = process.env.RUN_ID;
   if (!runId) return;
   try {
-    await fetch(`${API_URL}/api/post-logs`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...data, run_id: runId }),
-    });
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), POST_LOG_FETCH_MS);
+    try {
+      await fetch(`${API_URL}/api/post-logs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...data, run_id: runId }),
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(t);
+    }
   } catch {
-    // Silent fail
+    // Silent fail — อย่าค้างบอทถ้า API ไม่ตอบ
   }
 }

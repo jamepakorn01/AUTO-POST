@@ -28,8 +28,8 @@ export default defineConfig({
     /* Base URL to use in actions like `await page.goto('')`. */
     // baseURL: 'http://localhost:3000',
 
-    /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
-    trace: 'on-first-retry',
+    /* Trace เมื่อเทสต์ล้ม — เปิดด้วย npx playwright show-trace */
+    trace: 'retain-on-failure',
   },
 
   /* Configure projects for major browsers */
@@ -37,6 +37,13 @@ export default defineConfig({
   {
     name: 'Google Chrome',
     use: { ...devices['Desktop Chrome'], channel: 'chrome' }, // ใช้ Google Chrome ในเครื่อง
+  },
+  {
+    name: 'ChromiumCollect',
+    use: {
+      ...devices['Desktop Chrome'],
+      headless: true,
+    },
   },
   // { name: 'firefox', use: { ...devices['Desktop Firefox'] } }, <-- ปิดพวกนี้ไว้
 ],

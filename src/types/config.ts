@@ -1,4 +1,4 @@
-/** โครงสร้าง config สำหรับ Master Bot (User 1-8) */
+﻿/** Types for Master Bot config (User 1-8) */
 export interface MasterConfig {
   account: {
     email: string;
@@ -30,7 +30,7 @@ export interface PostItem {
   groupID: string[];
 }
 
-/** โครงสร้าง config สำหรับ Worker Bot (User4Worker) */
+/** Types for Worker Bot config (User4Worker) */
 export interface WorkerConfig {
   account: { email: string; password: string; poster_name?: string; sheet_url?: string };
   post_settings: {
@@ -53,14 +53,15 @@ export interface WorkerTask {
   };
 }
 
-/** โครงสร้างสำหรับ Dynamic Config (Web Admin) */
+/** Types for dynamic config (Web Admin) */
 export interface DynamicUser {
   id: string;
-  env_key?: string; // สำหรับ .env: USER_{env_key}_EMAIL, USER_{env_key}_PASSWORD
+  env_key?: string; // maps to USER_{env_key}_EMAIL / PASSWORD
   name?: string;
   poster_name?: string;
   sheet_url?: string;
-  group_ids?: string[]; // กลุ่ม FB ที่ User นี้ผูกไว้
+  contact_phone?: string;
+  group_ids?: string[]; // FB groups mapped to this user
   blacklist_groups?: string[];
 }
 
@@ -69,6 +70,9 @@ export interface DynamicGroup {
   name?: string;
   fb_group_id: string;
   province?: string;
+  province_note?: string;
+  sheet_url?: string;
+  blacklist_groups?: string[];
 }
 
 export interface DynamicJob {
@@ -85,8 +89,10 @@ export interface DynamicJob {
 export interface DynamicAssignment {
   id: string;
   job_ids: string[];
+  group_ids?: string[];
+  doer_name?: string;
   user_id: string;
-  /** @deprecated ใช้ job_ids แทน */
+  /** @deprecated Use job_ids instead */
   job_id?: string;
 }
 
