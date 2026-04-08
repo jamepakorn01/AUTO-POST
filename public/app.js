@@ -135,6 +135,14 @@ function parseGroupInputsToIds(rawText) {
   return Array.from(idsSet);
 }
 
+/** นับบรรทัดที่ไม่ว่างในช่องวางลิงก์/ID กลุ่ม (สรุปหลังเพิ่ม) */
+function countNonEmptyGroupInputLines(rawText) {
+  return String(rawText || '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean).length;
+}
+
 function formatProvinceLabel(province, provinceNote) {
   const parsed = parseProvinceWithInlineNote(province, provinceNote);
   const p = parsed.province;
@@ -798,9 +806,23 @@ const TAB_CONFIG = {
 };
 
 // --- API helpers ---
+async function readFetchErrorMessage(res) {
+  const text = await res.text();
+  const t = String(text || '').trim();
+  if (!t) return res.statusText || `HTTP ${res.status}`;
+  try {
+    const j = JSON.parse(t);
+    if (j && typeof j.error === 'string' && j.error) return j.error;
+    if (j && typeof j.message === 'string' && j.message) return j.message;
+  } catch (_) {
+    /* plain text / HTML */
+  }
+  return t.length > 400 ? `${t.slice(0, 400)}…` : t;
+}
+
 async function apiGet(entity) {
   const res = await fetch(`${API}/${entity}`);
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await readFetchErrorMessage(res));
   return res.json();
 }
 
@@ -810,7 +832,7 @@ async function apiPost(entity, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await readFetchErrorMessage(res));
   return res.json();
 }
 
@@ -821,14 +843,40 @@ async function apiPut(entity, id, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await readFetchErrorMessage(res));
   return res.json();
 }
 
 async function apiDelete(entity, id) {
   const sid = encodeURIComponent(String(id));
   const res = await fetch(`${API}/${entity}/${sid}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await readFetchErrorMessage(res));
+}
+
+let appToastHideTimer = null;
+
+/** แจ้งผลเหนือ modal (กันกรณี alert ถูกบัง / ไม่โผล่บนมือถือหรือ in-app browser) */
+function showAppToast(message, kind = 'success') {
+  let el = document.getElementById('app-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'app-toast';
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
+    document.body.appendChild(el);
+  }
+  const variant = kind === 'error' ? 'error' : 'success';
+  el.className = `app-toast app-toast--${variant}`;
+  el.textContent = message;
+  el.removeAttribute('hidden');
+  requestAnimationFrame(() => {
+    el.classList.add('app-toast--visible');
+  });
+  clearTimeout(appToastHideTimer);
+  appToastHideTimer = setTimeout(() => {
+    el.classList.remove('app-toast--visible');
+    setTimeout(() => el.setAttribute('hidden', ''), 280);
+  }, 7500);
 }
 
 async function getOwnerOptionsFallback() {
@@ -1054,6 +1102,8 @@ const deleteModal = document.getElementById('delete-modal');
 let deleteTargetId = null;
 let deleteTargetItem = null;
 let formDirty = false;
+/** กำลัง submit ฟอร์ม CRUD — กันปิด modal พลาดระหว่างเรียก API */
+let crudFormSubmitBusy = false;
 
 function markFormDirty() {
   formDirty = true;
@@ -1076,9 +1126,53 @@ function resetFormDirty() {
 }
 
 function confirmCloseFormModal() {
+  if (crudFormSubmitBusy) {
+    alert('กำลังบันทึกข้อมูล กรุณารอจนเสร็จก่อนปิดหน้าต่าง');
+    return false;
+  }
   if (!formDirty) return true;
   // ยืนยันก่อนปิด เมื่อกรอกข้อมูลอยู่
   return window.confirm('คุณยังไม่ได้บันทึกข้อมูล ฟอร์มนี้จะถูกปิดและข้อมูลที่กรอกจะหายไป ต้องการออกจากหน้านี้หรือไม่?');
+}
+
+function setCrudFormSubmitting(busy) {
+  crudFormSubmitBusy = !!busy;
+  const modal = document.getElementById('form-modal');
+  if (modal) modal.setAttribute('aria-busy', busy ? 'true' : 'false');
+  const closeBtn = document.getElementById('modal-close');
+  if (closeBtn) closeBtn.disabled = busy;
+  document.querySelectorAll('#form-actions button').forEach((b) => {
+    b.disabled = busy;
+  });
+}
+
+function applyCrudSaveLoading(btn, labelText) {
+  if (!btn) return;
+  if (!btn.dataset.saveIdleHtml) btn.dataset.saveIdleHtml = btn.innerHTML;
+  btn.classList.add('btn-primary--busy');
+  btn.innerHTML = '';
+  const sp = document.createElement('span');
+  sp.className = 'btn-busy-spinner';
+  sp.setAttribute('aria-hidden', 'true');
+  const lab = document.createElement('span');
+  lab.className = 'btn-busy-label';
+  lab.textContent = labelText;
+  btn.appendChild(sp);
+  btn.appendChild(lab);
+}
+
+function updateCrudSaveLoadingLabel(btn, labelText) {
+  const lab = btn?.querySelector?.('.btn-busy-label');
+  if (lab) lab.textContent = labelText;
+}
+
+function clearCrudSaveLoading(btn) {
+  if (!btn) return;
+  if (btn.dataset.saveIdleHtml) {
+    btn.innerHTML = btn.dataset.saveIdleHtml;
+    delete btn.dataset.saveIdleHtml;
+  }
+  btn.classList.remove('btn-primary--busy');
 }
 
 function openFormModal() {
@@ -1992,10 +2086,10 @@ async function renderForm(cfg, item) {
   if (version !== renderFormVersion) return;
   actions.innerHTML = '';
   const saveBtn = document.createElement('button');
-  saveBtn.type = 'button';
+  saveBtn.type = 'submit';
+  saveBtn.setAttribute('form', 'crud-form');
   saveBtn.className = 'btn-primary';
   saveBtn.textContent = item ? 'บันทึก' : 'เพิ่ม';
-  saveBtn.onclick = () => submitForm(item?.id ?? editingId);
   actions.appendChild(saveBtn);
 
   if (item) {
@@ -2038,36 +2132,54 @@ function getModalCrudConfig() {
 }
 
 async function submitForm(id) {
-  const form = document.getElementById('crud-form');
-  const cfg = getModalCrudConfig();
-  const data = {};
-  cfg.fields.forEach((f) => {
-    let val;
-    if (f.type === 'multiselectFrom') {
-      const multiselectName = `${f.key}[]`;
-      val = Array.from(form.querySelectorAll('input[type="checkbox"]:checked'))
-        .filter((cb) => cb.name === multiselectName)
-        .map((cb) => cb.value);
-    } else {
-      const el = form.querySelector(`[name="${f.key}"]`);
-      if (!el) {
-        val = '';
-      } else {
-        val = el.value?.trim();
-      }
-    }
-    if (f.key === 'group_ids' || f.key === 'blacklist_groups' || f.key === 'job_ids' || f.key === 'job_positions' || f.key === 'assignment_ids') {
-      if (typeof val === 'string') val = val ? val.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean) : [];
-    }
-    data[f.key] = val;
-  });
+  const saveBtn = document.querySelector('#form-actions .btn-primary');
+  const formId = id !== undefined && id !== null ? id : editingId;
 
+  setCrudFormSubmitting(true);
+  applyCrudSaveLoading(saveBtn, 'กำลังบันทึก…');
   try {
+    const form = document.getElementById('crud-form');
+    const cfg = getModalCrudConfig();
+    if (!cfg || !Array.isArray(cfg.fields)) {
+      throw new Error('โหลดฟอร์มไม่สำเร็จ กรุณาปิดหน้าต่างแล้วลองใหม่');
+    }
+    if (!form) {
+      throw new Error('ไม่พบฟอร์ม');
+    }
+
+    const data = {};
+    cfg.fields.forEach((f) => {
+      let val;
+      if (f.type === 'multiselectFrom') {
+        const multiselectName = `${f.key}[]`;
+        val = Array.from(form.querySelectorAll('input[type="checkbox"]:checked'))
+          .filter((cb) => cb.name === multiselectName)
+          .map((cb) => cb.value);
+      } else {
+        const el = form.querySelector(`[name="${f.key}"]`);
+        if (!el) {
+          val = '';
+        } else {
+          val = el.value?.trim();
+        }
+      }
+      if (f.key === 'group_ids' || f.key === 'blacklist_groups' || f.key === 'job_ids' || f.key === 'job_positions' || f.key === 'assignment_ids') {
+        if (typeof val === 'string') val = val ? val.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean) : [];
+      }
+      data[f.key] = val;
+    });
+
     if (cfg.api === 'groups') {
       const ids = parseGroupInputsToIds(data.group_inputs);
 
       if (!String(data.added_by || '').trim()) {
         throw new Error('กรุณาเลือกผู้เพิ่ม Group');
+      }
+      if (!String(data.job_type || '').trim()) {
+        throw new Error('กรุณาเลือกประเภทงาน (Job Type)');
+      }
+      if (!String(data.province || '').trim()) {
+        throw new Error('กรุณาระบุหรือเลือกจังหวัด');
       }
 
       const provinceParsed = parseProvinceWithInlineNote(data.province, data.province_note);
@@ -2090,24 +2202,34 @@ async function submitForm(id) {
         const newSet = new Set(ids);
 
         if (ids.length === 0) {
+          updateCrudSaveLoadingLabel(saveBtn, 'กำลังลบกลุ่มในโฟลเดอร์…');
           for (const it of oldItems) {
             await apiDelete(cfg.api, it.id);
           }
           editingId = null;
           closeFormModal();
-          loadList();
-          alert('ลบกลุ่มทั้งหมดในโฟลเดอร์แล้ว');
+          await loadList();
+          showAppToast('ลบกลุ่มทั้งหมดในโฟลเดอร์แล้ว · รายการอัปเดตแล้ว');
           return;
         }
 
+        let step = 0;
+        const totalFolderOps = oldItems.filter((it) => {
+          const k = normalizeFbGroupSegment(String(it.fb_group_id || ''));
+          return !newSet.has(k);
+        }).length;
         for (const it of oldItems) {
           const k = normalizeFbGroupSegment(String(it.fb_group_id || ''));
           if (!newSet.has(k)) {
+            step += 1;
+            updateCrudSaveLoadingLabel(saveBtn, `กำลังลบกลุ่มที่ไม่มีในรายการใหม่ (${step}/${totalFolderOps})…`);
             await apiDelete(cfg.api, it.id);
           }
         }
 
-        for (const gid of ids) {
+        for (let i = 0; i < ids.length; i++) {
+          const gid = ids[i];
+          updateCrudSaveLoadingLabel(saveBtn, `กำลังบันทึกกลุ่ม ${i + 1}/${ids.length}…`);
           const old = oldByFb.get(gid);
           if (old) {
             await apiPut(cfg.api, old.id, {
@@ -2126,8 +2248,8 @@ async function submitForm(id) {
 
         editingId = null;
         closeFormModal();
-        loadList();
-        alert('บันทึกสำเร็จ');
+        await loadList();
+        showAppToast(`บันทึกโฟลเดอร์สำเร็จ · อัปเดต ${ids.length} กลุ่มในรายการแล้ว`);
         return;
       }
 
@@ -2135,28 +2257,41 @@ async function submitForm(id) {
         throw new Error('กรุณาใส่ลิงก์กลุ่ม หรือ Group ID อย่างน้อย 1 รายการ');
       }
 
-      if (id) {
+      if (formId) {
+        updateCrudSaveLoadingLabel(saveBtn, 'กำลังบันทึกกลุ่ม…');
         const gid = ids[0];
-        await apiPut(cfg.api, id, {
+        await apiPut(cfg.api, formId, {
           ...bodyBase,
           fb_group_id: gid,
           name: `Group ${gid}`,
         });
-        alert('บันทึกสำเร็จ');
       } else {
-        for (const gid of ids) {
+        for (let i = 0; i < ids.length; i++) {
+          const gid = ids[i];
+          updateCrudSaveLoadingLabel(saveBtn, `กำลังเพิ่มกลุ่ม ${i + 1}/${ids.length}…`);
           await apiPost(cfg.api, {
             ...bodyBase,
             fb_group_id: gid,
             name: `Group ${gid}`,
           });
         }
-        alert(`เพิ่มสำเร็จ ${ids.length} กลุ่ม`);
       }
 
       editingId = null;
       closeFormModal();
-      loadList();
+      await loadList();
+      if (formId) {
+        showAppToast('บันทึกกลุ่มสำเร็จ · รายการด้านล่างอัปเดตแล้ว');
+      } else {
+        const lines = countNonEmptyGroupInputLines(data.group_inputs);
+        let msg = `เพิ่มกลุ่มสำเร็จ ${ids.length} รายการ · รายการด้านล่างอัปเดตแล้ว`;
+        if (lines > ids.length) {
+          msg += ` · กรอก ${lines} บรรทัด → ใช้ได้ ${ids.length} ID ไม่ซ้ำ (ส่วนที่เหลือซ้ำหรือรูปแบบไม่ถูก)`;
+        } else if (lines < ids.length) {
+          msg += ` · มีหลาย ID/ลิงก์ในบรรทัดเดียว (รวม ${ids.length} กลุ่ม)`;
+        }
+        showAppToast(msg);
+      }
       return;
     }
 
@@ -2214,22 +2349,22 @@ async function submitForm(id) {
         comment_reply: data.comment_reply || null,
         job_type: data.job_type || null,
       };
-      if (id) {
-        saved = await apiPut('jobs', id, jobPayload);
+      if (formId) {
+        saved = await apiPut('jobs', formId, jobPayload);
         alert('บันทึกสำเร็จ');
       } else {
         saved = await apiPost('jobs', jobPayload);
         alert('เพิ่มสำเร็จ');
       }
-    } else if (id) {
-      saved = await apiPut(cfg.api, id, data);
+    } else if (formId) {
+      saved = await apiPut(cfg.api, formId, data);
       alert('บันทึกสำเร็จ');
     } else {
       saved = await apiPost(cfg.api, data);
       alert('เพิ่มสำเร็จ');
     }
     if (cfg.api === 'assignments') {
-      const assignmentId = (saved && saved.id) || id;
+      const assignmentId = (saved && saved.id) || formId;
       if (assignmentId) {
         setCachedAssignmentDoer(assignmentId, data.doer_name || '');
       }
@@ -2238,7 +2373,10 @@ async function submitForm(id) {
     closeFormModal();
     loadList();
   } catch (e) {
-    alert('เกิดข้อผิดพลาด: ' + e.message);
+    alert('เกิดข้อผิดพลาด: ' + (e && e.message ? e.message : String(e)));
+  } finally {
+    setCrudFormSubmitting(false);
+    clearCrudSaveLoading(saveBtn);
   }
 }
 
@@ -3920,6 +4058,11 @@ document.getElementById('btn-add').addEventListener('click', async () => {
   document.getElementById('form-title').textContent = cfg.addTitle;
   await renderForm(cfg, null);
   openFormModal();
+});
+
+document.getElementById('crud-form')?.addEventListener('submit', (e) => {
+  e.preventDefault();
+  submitForm(editingId);
 });
 
 document.getElementById('delete-confirm').addEventListener('click', async () => {

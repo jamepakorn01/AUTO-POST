@@ -363,6 +363,32 @@
     }
     .btn-primary:active:not(:disabled) { transform: translateY(0); }
     .btn-primary:disabled { opacity: 0.55; cursor: not-allowed; }
+    .btn-primary.btn-primary--busy:disabled {
+      opacity: 1;
+      cursor: wait;
+    }
+    .btn-busy-spinner {
+      display: inline-block;
+      width: 1rem;
+      height: 1rem;
+      margin-right: 0.45rem;
+      vertical-align: -0.2em;
+      border: 2px solid rgba(255, 255, 255, 0.35);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: btnBusySpin 0.7s linear infinite;
+    }
+    @keyframes btnBusySpin {
+      to { transform: rotate(360deg); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .btn-busy-spinner { animation: none; border-color: rgba(255,255,255,0.65); }
+    }
+    .modal-close-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
     .btn-primary:focus-visible {
       outline: 2px solid #ef4444;
       outline-offset: 2px;
@@ -719,6 +745,42 @@
       }
     }
 
+    /* Toast แจ้งผลบันทึก (z-index เหนือ modal — แก้กรณี alert ไม่ขึ้น) */
+    #app-toast {
+      position: fixed;
+      bottom: 1.35rem;
+      left: 50%;
+      z-index: 10000;
+      max-width: min(26rem, calc(100vw - 1.75rem));
+      padding: 0.8rem 1rem;
+      border-radius: var(--radius-sm);
+      font-size: 0.8125rem;
+      font-weight: 600;
+      line-height: 1.5;
+      text-align: center;
+      box-shadow: 0 12px 40px rgba(15, 23, 42, 0.22);
+      transform: translate3d(-50%, 130%, 0);
+      opacity: 0;
+      transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.28s ease;
+      pointer-events: none;
+    }
+    #app-toast.app-toast--visible {
+      transform: translate3d(-50%, 0, 0);
+      opacity: 1;
+    }
+    #app-toast.app-toast--success {
+      background: #0f172a;
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+    #app-toast.app-toast--error {
+      background: #991b1b;
+      color: #fff;
+      border: 1px solid rgba(0, 0, 0, 0.08);
+    }
+    #app-toast[hidden] {
+      display: none !important;
+    }
 
     /* Theme overrides for dynamic Tailwind from app.js */
     .text-emerald-600 { color: #dc2626 !important; }
@@ -872,6 +934,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=fb-api-hint-20260407d"></script>
+  <script src="app.js?v=fb-api-hint-20260408c"></script>
 </body>
 </html>
