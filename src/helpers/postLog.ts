@@ -39,7 +39,7 @@ export async function postLog(data: PostLogData): Promise<void> {
     } finally {
       clearTimeout(t);
     }
-  } catch {
-    // Silent fail — อย่าค้างบอทถ้า API ไม่ตอบ
+  } catch (e) {
+    console.warn('[postLog] บันทึกลง API ไม่สำเร็จ:', (e as Error).message || String(e), '→ ตรวจ RUN_LOG_API_URL / เครือข่าย');
   }
 }

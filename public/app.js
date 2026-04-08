@@ -1148,6 +1148,38 @@ function showAssignmentPostStatus(rowEl, message, kind = 'info') {
   box.className = `assignment-post-status assignment-post-status--${k}`;
   box.textContent = message;
   box.classList.remove('hidden');
+  if (k !== 'error') {
+    const prev = box._autoHideTimer;
+    if (prev) clearTimeout(prev);
+    box._autoHideTimer = setTimeout(() => {
+      box.classList.add('hidden');
+      box.textContent = '';
+      box._autoHideTimer = null;
+    }, 45000);
+  }
+}
+
+function syncAssignmentPostBadgesWithRunStatus(status) {
+  if (currentTab !== 'assignments') return;
+  const runningUsers = new Set(
+    (Array.isArray(status?.user_runs) ? status.user_runs : [])
+      .filter((u) => !!u?.running)
+      .map((u) => String(u.user_id || '').trim())
+      .filter(Boolean)
+  );
+  document.querySelectorAll('#list-container .list-row').forEach((row) => {
+    const uid = String(row.dataset.assignUserId || '').trim();
+    const box = row.querySelector('.assignment-post-status');
+    if (!box) return;
+    if (!runningUsers.has(uid) && !box.classList.contains('assignment-post-status--error')) {
+      if (box._autoHideTimer) {
+        clearTimeout(box._autoHideTimer);
+        box._autoHideTimer = null;
+      }
+      box.classList.add('hidden');
+      box.textContent = '';
+    }
+  });
 }
 
 async function getOwnerOptionsFallback() {
@@ -4038,11 +4070,6 @@ async function loadList() {
               postBtn.textContent = 'กำลังเริ่ม...';
               const out = await runPost([item.id]);
               if (out?.queued) {
-                showAssignmentPostStatus(
-                  row,
-                  'เข้าคิวแล้ว: บัญชี Facebook นี้กำลังโพสต์อยู่ ระบบจะเริ่มงานนี้ให้อัตโนมัติเมื่อคิวก่อนหน้าจบ',
-                  'queued'
-                );
                 showAppToast('เข้าคิวโพสต์แล้ว (บัญชีเดียวกัน)', 'success');
               } else {
                 showAssignmentPostStatus(
@@ -4610,6 +4637,7 @@ async function refreshRunStatusBanner() {
     }
     const showPostCards = !!s.running || (!!activePostRunId && String(s.run_id || '') === activePostRunId);
     renderPostStatusCards(showPostCards ? s : { ...s, user_runs: [] });
+    syncAssignmentPostBadgesWithRunStatus(s);
   } catch {
     /* ignore */
   }

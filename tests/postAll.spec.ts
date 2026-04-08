@@ -24,6 +24,23 @@ test('Dynamic Post: รันโพสต์ตาม Assignments', async ({ pag
   test.setTimeout(30 * 60 * 1000);
   let activePage = page;
   const config = await loadDynamicConfig();
+  const ensureActivePageForUser = async (user: {
+    id: string;
+    name?: string;
+    email?: string;
+    password?: string;
+    env_key?: string;
+  }): Promise<boolean> => {
+    if (!activePage.isClosed()) return true;
+    if (!user.email || !user.password) return false;
+    console.log(`♻️ [${user.name || user.id}] ตรวจพบหน้า browser ปิด — กำลัง login ใหม่อัตโนมัติ`);
+    activePage = await facebookLogin(activePage, user.email, user.password, {
+      userLabel: user.name || user.id,
+      sessionKey: String(user.env_key || user.id || user.email || 'default'),
+    });
+    console.log(`✅ [${user.name || user.id}] กลับมาออนไลน์แล้ว ดำเนินงานต่อ`);
+    return true;
+  };
 
   if (config.users.length === 0) {
     console.log('❌ ไม่มี User (ตรวจสอบ data/users.json หรือฐานข้อมูล)');
@@ -109,18 +126,33 @@ test('Dynamic Post: รันโพสต์ตาม Assignments', async ({ pag
 
       for (const gID of fbGroupIds) {
         const groupMeta = groupsForAssignment.find((g) => g.fb_group_id === gID);
-        console.log(`🚀 [${user.name || user.id}] โพสต์งาน "${job.title}" ไปกลุ่ม ${gID}`);
-        const ok = await postToGroup(activePage, request, postItem, gID, {
-          userLabel: user.name || user.id,
-          posterName: user.poster_name || user.name || 'Poster',
-          sheetUrl: groupMeta?.sheet_url || DEFAULT_SHEET_URL || user.sheet_url || '',
-          blacklistGroups: user.blacklist_groups,
-          assignmentId: assignment.id,
-          userId: user.id,
-          jobId,
-          groupId: gID,
-        });
-        if (ok) {
+        let posted = false;
+        const maxAttempts = 2;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          const pageReady = await ensureActivePageForUser(user);
+          if (!pageReady) break;
+          console.log(
+            `🚀 [${user.name || user.id}] โพสต์งาน "${job.title}" ไปกลุ่ม ${gID} (ครั้งที่ ${attempt}/${maxAttempts})`
+          );
+          posted = await postToGroup(activePage, request, postItem, gID, {
+            userLabel: user.name || user.id,
+            posterName: user.poster_name || user.name || 'Poster',
+            sheetUrl: groupMeta?.sheet_url || DEFAULT_SHEET_URL || user.sheet_url || '',
+            blacklistGroups: user.blacklist_groups,
+            assignmentId: assignment.id,
+            userId: user.id,
+            jobId,
+            groupId: gID,
+          });
+          if (posted) break;
+          if (!activePage.isClosed()) break;
+          if (attempt < maxAttempts) {
+            console.log(
+              `⚠️ [${user.name || user.id}] browser ปิดระหว่างโพสต์กลุ่ม ${gID} — เตรียม retry อัตโนมัติ`
+            );
+          }
+        }
+        if (posted) {
           await runLog({
             level: 'success',
             message: `โพสต์สำเร็จ: ${job.title} → กลุ่ม ${gID}`,
@@ -138,10 +170,6 @@ test('Dynamic Post: รันโพสต์ตาม Assignments', async ({ pag
             job_id: jobId,
             group_id: gID,
           });
-        }
-        if (activePage.isClosed()) {
-          console.log(`⚠️ [${user.name || user.id}] หน้าต่างถูกปิดระหว่างโพสต์กลุ่ม ${gID} — ข้ามต่อเพื่อไม่ให้ทั้งงานล้ม`);
-          break;
         }
         await activePage.waitForTimeout(3000);
       }

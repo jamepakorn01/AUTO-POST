@@ -357,7 +357,26 @@ export async function saveToSheet(
       return;
     }
 
-    console.warn('[saveToSheet] ไม่พบลิงก์โพสต์ล่าสุด — ข้ามบันทึก Sheet/Log (โพสต์อาจสำเร็จแล้ว)');
+    console.warn('[saveToSheet] ไม่พบลิงก์โพสต์ล่าสุด — ข้ามบันทึก Sheet (โพสต์อาจสำเร็จแล้ว)');
+    /** ยังบันทึก Post Log แม้ไม่มีลิงก์ — ให้หน้า Collect เห็นว่ามีโพสต์ในวันนั้น (แถวมีลิงก์จะโผล่หลังแก้การดึงลิงก์) */
+    if (postLogOpts?.userId || postLogOpts?.assignmentId || postLogOpts?.jobId) {
+      await postLog({
+        poster_name: posterName,
+        owner: postItem.owner,
+        job_title: postItem.title,
+        company: postItem.company,
+        group_name: normalizeGroupName(groupName),
+        member_count: memberCount,
+        post_link: '',
+        post_status: 'ไม่พบลิงก์หลังโพสต์',
+        comment_count: 0,
+        customer_phone: postLogOpts.customerPhone,
+        assignment_id: postLogOpts.assignmentId,
+        user_id: postLogOpts.userId,
+        job_id: postLogOpts.jobId,
+        group_id: postLogOpts.groupId || gID,
+      });
+    }
   } catch (err) {
     console.error('[saveToSheet] บันทึก Sheet ไม่สำเร็จ:', (err as Error).message);
   }
