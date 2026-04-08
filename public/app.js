@@ -143,6 +143,61 @@ function countNonEmptyGroupInputLines(rawText) {
     .filter(Boolean).length;
 }
 
+const GROUPS_LIST_HIGHLIGHT_KEY = 'groups_list_highlight_v1';
+
+function rememberGroupsFolderHighlight(data, provinceParsed) {
+  try {
+    sessionStorage.setItem(
+      GROUPS_LIST_HIGHLIGHT_KEY,
+      JSON.stringify({
+        departmentKey: String(data.department || '').trim() || '__none__',
+        jobType: String(data.job_type || '').trim(),
+        provinceLabel: formatProvinceLabel(provinceParsed.province, provinceParsed.province_note),
+        adder: String(data.added_by || '').trim(),
+        ts: Date.now(),
+      })
+    );
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+function consumeGroupsFolderHighlight() {
+  try {
+    const raw = sessionStorage.getItem(GROUPS_LIST_HIGHLIGHT_KEY);
+    if (!raw) return null;
+    sessionStorage.removeItem(GROUPS_LIST_HIGHLIGHT_KEY);
+    const o = JSON.parse(raw);
+    if (!o || Date.now() - (o.ts || 0) > 120000) return null;
+    return o;
+  } catch (_) {
+    return null;
+  }
+}
+
+function applyGroupsFolderHighlight(container) {
+  const h = consumeGroupsFolderHighlight();
+  if (!h) return;
+  requestAnimationFrame(() => {
+    const deptSec = Array.from(container.querySelectorAll('.group-dept-section')).find(
+      (el) => String(el.dataset.department || '') === h.departmentKey
+    );
+    if (!deptSec) return;
+    const secs = deptSec.querySelectorAll('.group-section');
+    for (const sec of secs) {
+      const jt = String(sec.dataset.jobType || '').trim();
+      const prov = String(sec.dataset.province || '').trim();
+      const ad = String(sec.dataset.adder || '').trim();
+      if (jt === h.jobType && prov === h.provinceLabel && ad === h.adder) {
+        sec.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        sec.classList.add('group-section--highlight');
+        setTimeout(() => sec.classList.remove('group-section--highlight'), 4500);
+        break;
+      }
+    }
+  });
+}
+
 function formatProvinceLabel(province, provinceNote) {
   const parsed = parseProvinceWithInlineNote(province, provinceNote);
   const p = parsed.province;
@@ -821,7 +876,7 @@ async function readFetchErrorMessage(res) {
 }
 
 async function apiGet(entity) {
-  const res = await fetch(`${API}/${entity}`);
+  const res = await fetch(`${API}/${entity}`, { cache: 'no-store' });
   if (!res.ok) throw new Error(await readFetchErrorMessage(res));
   return res.json();
 }
@@ -2246,6 +2301,7 @@ async function submitForm(id) {
           }
         }
 
+        rememberGroupsFolderHighlight(data, provinceParsed);
         editingId = null;
         closeFormModal();
         await loadList();
@@ -2277,6 +2333,7 @@ async function submitForm(id) {
         }
       }
 
+      rememberGroupsFolderHighlight(data, provinceParsed);
       editingId = null;
       closeFormModal();
       await loadList();
@@ -3690,7 +3747,12 @@ async function loadList() {
           header.textContent = `ประเภทงาน: ${jt || '-'} -- จังหวัด: ${formatProvinceLabel(pv, pn)} -- ชื่อผู้เพิ่ม Group : ${adder}`;
           section.appendChild(header);
           const bucket = buckets.get(k);
-          bucket.sort((a, b) => String(a.fb_group_id || '').localeCompare(String(b.fb_group_id || ''), 'th'));
+          bucket.sort((a, b) =>
+            String(b.fb_group_id || '').localeCompare(String(a.fb_group_id || ''), undefined, {
+              numeric: true,
+              sensitivity: 'base',
+            })
+          );
           const body = document.createElement('div');
           body.className = 'px-3 py-2 bg-slate-50/80 flex flex-wrap items-center gap-3';
           const count = document.createElement('span');
@@ -3711,11 +3773,30 @@ async function loadList() {
           body.appendChild(editBtn);
           body.appendChild(delAllBtn);
           section.appendChild(body);
+          const idDetails = document.createElement('details');
+          idDetails.className = 'group-section-ids border-t border-slate-200 bg-white';
+          const idSumm = document.createElement('summary');
+          idSumm.className =
+            'px-3 py-2 text-sm text-slate-600 font-medium cursor-pointer select-none hover:bg-slate-50 hover:text-slate-900';
+          idSumm.textContent = `ดูรายการ Group ID (${bucket.length})`;
+          idDetails.appendChild(idSumm);
+          const idWrap = document.createElement('div');
+          idWrap.className =
+            'px-3 pb-3 pt-0 max-h-56 overflow-y-auto space-y-1 font-mono text-xs text-slate-700 break-all';
+          bucket.forEach((g) => {
+            const line = document.createElement('div');
+            const gid = String(g.fb_group_id || g.id || '').trim();
+            line.textContent = gid || '—';
+            idWrap.appendChild(line);
+          });
+          idDetails.appendChild(idWrap);
+          section.appendChild(idDetails);
           innerWrap.appendChild(section);
         });
         deptSection.appendChild(innerWrap);
         container.appendChild(deptSection);
       });
+      applyGroupsFolderHighlight(container);
       return;
     }
 

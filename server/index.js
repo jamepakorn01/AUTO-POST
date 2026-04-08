@@ -13,6 +13,14 @@ let serverListenPort = PORT;
 
 // Middleware
 app.use(express.json());
+/** กัน CDN/เบราว์เซอร์แคช GET /api/* — รายการ Groups/Jobs ต้องสดหลังเพิ่ม/แก้ไข */
+app.use((req, res, next) => {
+  if (String(req.path || '').startsWith('/api')) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+    res.setHeader('Pragma', 'no-cache');
+  }
+  next();
+});
 
 /** ลงทะเบียนก่อน require db — ใช้ยืนยันว่าโปรเซสรันไฟล์นี้จริง (ถ้า URL นี้ยัง 404 = ไม่ใช่ server/index.js ชุดนี้บนพอร์ตนั้น) */
 const SERVER_BUILD_MARK = 'fb-session-20260407d';
