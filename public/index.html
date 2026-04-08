@@ -744,6 +744,43 @@
       border: 1px solid #f1f5f9;
       word-break: break-all;
     }
+    .assignment-post-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.75rem;
+      line-height: 1.35;
+      font-weight: 600;
+      border-radius: 999px;
+      padding: 0.25rem 0.55rem;
+      border: 1px solid transparent;
+      max-width: 100%;
+      word-break: break-word;
+    }
+    .assignment-post-status::before {
+      content: '';
+      width: 0.45rem;
+      height: 0.45rem;
+      border-radius: 999px;
+      background: currentColor;
+      opacity: 0.85;
+      flex-shrink: 0;
+    }
+    .assignment-post-status--started {
+      color: #166534;
+      background: #ecfdf5;
+      border-color: #86efac;
+    }
+    .assignment-post-status--queued {
+      color: #92400e;
+      background: #fffbeb;
+      border-color: #fcd34d;
+    }
+    .assignment-post-status--error {
+      color: #991b1b;
+      background: #fef2f2;
+      border-color: #fca5a5;
+    }
 
     /* List rows */
     .list-row {

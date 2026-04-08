@@ -853,7 +853,9 @@ app.delete('/api/schedules/:id', async (req, res) => {
 });
 
 // --- API: Run Post Bot ---
-let postProcess = null;
+let postProcess = null; // backward-compatible pointer to latest active process
+const postRunners = new Map(); // key=user_id, value={ user_id, process, status, run_id }
+const queuedAssignmentIdsByUser = new Map(); // key=user_id, value=Set<assignment_id>
 const USE_REMOTE_POST_WORKER = process.env.POST_REMOTE_WORKER === '1' || !!process.env.VERCEL;
 const POST_WORKER_TOKEN = String(process.env.POST_WORKER_TOKEN || '').trim();
 let runStatus = {
@@ -867,11 +869,48 @@ let runStatus = {
   message: 'ยังไม่เคยเริ่มโพสต์',
 };
 
-function startPostRun(assignmentIds = []) {
-  if (postProcess) {
-    const err = new Error('กำลังรัน Post อยู่แล้ว');
+function queueAssignmentsForUser(userId, assignmentIds = []) {
+  const key = String(userId || '__all__');
+  const set = queuedAssignmentIdsByUser.get(key) || new Set();
+  for (const id of assignmentIds.map((x) => String(x).trim()).filter(Boolean)) set.add(id);
+  queuedAssignmentIdsByUser.set(key, set);
+  return Array.from(set);
+}
+
+function getActiveRunners() {
+  return Array.from(postRunners.values()).filter((r) => !!r?.process);
+}
+
+function getSingleActiveRunnerOrThrow() {
+  const active = getActiveRunners();
+  if (active.length === 0) return null;
+  if (active.length > 1) {
+    const err = new Error('มีงานโพสต์หลายบัญชีพร้อมกัน กรุณาหยุดจากหน้า Assignments รายบัญชี');
     err.statusCode = 409;
-    err.payload = { running: true, status: runStatus };
+    throw err;
+  }
+  return active[0];
+}
+
+function getRunnerByUserIdOrThrow(userId) {
+  const uid = String(userId || '').trim();
+  if (!uid) return getSingleActiveRunnerOrThrow();
+  const runner = postRunners.get(uid);
+  if (!runner || !runner.process) {
+    const err = new Error('ไม่พบบัญชีที่กำลังโพสต์ตาม user_id นี้');
+    err.statusCode = 404;
+    throw err;
+  }
+  return runner;
+}
+
+function startPostRunForUser(userId, assignmentIds = []) {
+  const key = String(userId || '__all__');
+  const existing = postRunners.get(key);
+  if (existing?.process) {
+    const err = new Error('บัญชีนี้กำลังรันโพสต์อยู่แล้ว');
+    err.statusCode = 409;
+    err.payload = { running: true, status: existing.status };
     throw err;
   }
   const runId = db.generateRunId();
@@ -880,7 +919,7 @@ function startPostRun(assignmentIds = []) {
     env.ASSIGNMENT_IDS = assignmentIds.join(',');
   }
   env.RUN_LOG_API_URL = `http://localhost:${serverListenPort}`;
-  runStatus = {
+  const status = {
     running: true,
     paused: false,
     run_id: runId,
@@ -890,59 +929,82 @@ function startPostRun(assignmentIds = []) {
     error: null,
     message: 'กำลังดำเนินการโพสต์...',
   };
+  runStatus = status;
   const isWin = process.platform === 'win32';
+  let child = null;
   if (isWin) {
     const cmdArgs = ['npx', 'playwright', 'test', 'postAll', '--headed', '--project=Google Chrome'];
-    postProcess = spawn('cmd.exe', ['/d', '/c', ...cmdArgs], {
+    child = spawn('cmd.exe', ['/d', '/c', ...cmdArgs], {
       cwd: PROJECT_ROOT,
       stdio: 'inherit',
       env,
       shell: false,
       windowsHide: false,
     });
-    logger.info('post_bot.spawn', { shell: 'cmd', args: cmdArgs.join(' '), run_id: runId });
+    logger.info('post_bot.spawn', { shell: 'cmd', args: cmdArgs.join(' '), run_id: runId, user_id: key });
   } else {
     const pwArgs = ['playwright', 'test', 'postAll', '--headed', '--project=Google Chrome'];
-    postProcess = spawn('npx', pwArgs, {
+    child = spawn('npx', pwArgs, {
       cwd: PROJECT_ROOT,
       stdio: 'inherit',
       env,
       shell: false,
       windowsHide: false,
     });
-    logger.info('post_bot.spawn', { shell: 'npx', args: pwArgs.join(' '), run_id: runId });
+    logger.info('post_bot.spawn', { shell: 'npx', args: pwArgs.join(' '), run_id: runId, user_id: key });
   }
-  postProcess.on('close', (code) => {
+  postProcess = child;
+  const runner = { user_id: key, process: child, status, run_id: runId };
+  postRunners.set(key, runner);
+  child.on('close', (code) => {
     const finishedRunId = runId;
-    postProcess = null;
-    runStatus = {
-      ...runStatus,
+    runner.process = null;
+    runner.status = {
+      ...runner.status,
       running: false,
       paused: false,
       finished_at: new Date().toISOString(),
       exit_code: typeof code === 'number' ? code : null,
       message: code === 0 ? 'ดำเนินการเสร็จสิ้นแล้ว' : `สิ้นสุดการทำงาน (exit code: ${code})`,
     };
-    logger.info('post_bot.close', { exit_code: code, run_id: finishedRunId });
+    runStatus = runner.status;
+    const anyActive = getActiveRunners();
+    postProcess = anyActive.length > 0 ? anyActive[anyActive.length - 1].process : null;
+    logger.info('post_bot.close', { exit_code: code, run_id: finishedRunId, user_id: key });
     db.updateScheduleByRunId?.(finishedRunId, code === 0 ? 'completed' : 'failed', code === 0 ? null : `exit code: ${code}`)
       .catch((e) => logger.error('updateScheduleByRunId(close)', { message: e.message }));
+    const q = queuedAssignmentIdsByUser.get(key);
+    if (q && q.size > 0) {
+      const ids = Array.from(q);
+      queuedAssignmentIdsByUser.delete(key);
+      setTimeout(() => {
+        try {
+          startPostRunForUser(key, ids);
+        } catch (e) {
+          logger.error('post_bot.start_queued_failed', { message: e?.message || String(e), user_id: key });
+        }
+      }, 100);
+    }
   });
-  postProcess.on('error', (err) => {
+  child.on('error', (err) => {
     const finishedRunId = runId;
-    postProcess = null;
-    runStatus = {
-      ...runStatus,
+    runner.process = null;
+    runner.status = {
+      ...runner.status,
       running: false,
       paused: false,
       finished_at: new Date().toISOString(),
       error: err.message || String(err),
       message: 'เกิดข้อผิดพลาดระหว่างรันโพสต์',
     };
-    logger.error('post_bot.spawn_error', { message: err.message || String(err), run_id: finishedRunId });
+    runStatus = runner.status;
+    const anyActive = getActiveRunners();
+    postProcess = anyActive.length > 0 ? anyActive[anyActive.length - 1].process : null;
+    logger.error('post_bot.spawn_error', { message: err.message || String(err), run_id: finishedRunId, user_id: key });
     db.updateScheduleByRunId?.(finishedRunId, 'failed', err.message || String(err))
       .catch((e) => logger.error('updateScheduleByRunId(error)', { message: e.message }));
   });
-  return { runId, status: runStatus };
+  return { runId, status: runner.status };
 }
 
 function runPwsh(command) {
@@ -976,7 +1038,7 @@ async function resumeProcess(pid) {
   process.kill(pid, 'SIGCONT');
 }
 
-app.post('/api/run/post', (req, res) => {
+app.post('/api/run/post', async (req, res) => {
   try {
     const assignmentIds = req.body?.assignment_ids;
     if (USE_REMOTE_POST_WORKER) {
@@ -1002,8 +1064,46 @@ app.post('/api/run/post', (req, res) => {
         status: runStatus,
       });
     }
-    startPostRun(Array.isArray(assignmentIds) ? assignmentIds : []);
-    res.json({ ok: true, message: 'กำลังเปิด Browser สำหรับโพสต์ - กรุณา Login Facebook', status: runStatus });
+    const ids = Array.isArray(assignmentIds) ? assignmentIds.map(String).filter(Boolean) : [];
+    if (ids.length === 0) {
+      // fallback เดิม: รันทั้งหมดครั้งเดียว
+      if (getActiveRunners().length > 0) {
+        return res.status(409).json({ error: 'กำลังรัน Post อยู่แล้ว', running: true, status: runStatus });
+      }
+      startPostRunForUser('__all__', []);
+      return res.json({ ok: true, message: 'กำลังเปิด Browser สำหรับโพสต์ - กรุณา Login Facebook', status: runStatus });
+    }
+
+    const rows = await Promise.all(ids.map((id) => db.getAssignmentById(id)));
+    const missing = rows.findIndex((r) => !r);
+    if (missing >= 0) return res.status(404).json({ error: `ไม่พบ Assignment: ${ids[missing]}` });
+
+    const byUser = new Map();
+    rows.forEach((r, i) => {
+      const key = String(r.user_id || '').trim();
+      if (!byUser.has(key)) byUser.set(key, []);
+      byUser.get(key).push(ids[i]);
+    });
+
+    let started = 0;
+    let queued = 0;
+    for (const [userId, userIds] of byUser.entries()) {
+      const existing = postRunners.get(userId);
+      if (existing?.process) {
+        queueAssignmentsForUser(userId, userIds);
+        queued += userIds.length;
+      } else {
+        startPostRunForUser(userId, userIds);
+        started += userIds.length;
+      }
+    }
+    const msg =
+      queued > 0 && started > 0
+        ? `เริ่มโพสต์ทันที ${started} รายการ และเข้าคิว ${queued} รายการ (บัญชีที่กำลังโพสต์อยู่)`
+        : queued > 0
+          ? `เข้าคิว ${queued} รายการ (บัญชีนี้กำลังโพสต์อยู่)`
+          : `กำลังเปิด Browser สำหรับโพสต์ ${started} รายการ`;
+    res.json({ ok: true, queued: queued > 0, message: msg, status: runStatus });
   } catch (err) {
     if (err.statusCode === 409) {
       return res.status(409).json({ error: err.message, ...(err.payload || {}) });
@@ -1023,44 +1123,53 @@ app.post('/api/run/post', (req, res) => {
 
 app.post('/api/run/post/pause', async (req, res) => {
   try {
-    if (!postProcess) return res.status(400).json({ error: 'ไม่มีงานโพสต์ที่กำลังรัน' });
-    if (runStatus.paused) return res.json({ ok: true, status: runStatus });
-    await suspendProcess(postProcess.pid);
-    runStatus = { ...runStatus, paused: true, message: 'หยุดงานโพสต์ชั่วคราว (Pause)' };
+    const runner = getRunnerByUserIdOrThrow(req.body?.user_id || req.query?.user_id);
+    if (!runner) return res.status(400).json({ error: 'ไม่มีงานโพสต์ที่กำลังรัน' });
+    if (runner.status.paused) return res.json({ ok: true, status: runner.status });
+    await suspendProcess(runner.process.pid);
+    runner.status = { ...runner.status, paused: true, message: 'หยุดงานโพสต์ชั่วคราว (Pause)' };
+    runStatus = runner.status;
     res.json({ ok: true, status: runStatus });
   } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ error: err.message });
     res.status(500).json({ error: err.message || String(err) });
   }
 });
 
 app.post('/api/run/post/resume', async (req, res) => {
   try {
-    if (!postProcess) return res.status(400).json({ error: 'ไม่มีงานโพสต์ที่กำลังรัน' });
-    if (!runStatus.paused) return res.json({ ok: true, status: runStatus });
-    await resumeProcess(postProcess.pid);
-    runStatus = { ...runStatus, paused: false, message: 'กลับมาทำงานโพสต์ต่อแล้ว (Resume)' };
+    const runner = getRunnerByUserIdOrThrow(req.body?.user_id || req.query?.user_id);
+    if (!runner) return res.status(400).json({ error: 'ไม่มีงานโพสต์ที่กำลังรัน' });
+    if (!runner.status.paused) return res.json({ ok: true, status: runner.status });
+    await resumeProcess(runner.process.pid);
+    runner.status = { ...runner.status, paused: false, message: 'กลับมาทำงานโพสต์ต่อแล้ว (Resume)' };
+    runStatus = runner.status;
     res.json({ ok: true, status: runStatus });
   } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ error: err.message });
     res.status(500).json({ error: err.message || String(err) });
   }
 });
 
 app.post('/api/run/post/cancel', async (req, res) => {
   try {
-    if (!postProcess) return res.status(400).json({ error: 'ไม่มีงานโพสต์ที่กำลังรัน' });
-    if (runStatus.paused) {
-      await resumeProcess(postProcess.pid).catch(() => {});
+    const runner = getRunnerByUserIdOrThrow(req.body?.user_id || req.query?.user_id);
+    if (!runner) return res.status(400).json({ error: 'ไม่มีงานโพสต์ที่กำลังรัน' });
+    if (runner.status.paused) {
+      await resumeProcess(runner.process.pid).catch(() => {});
     }
-    postProcess.kill();
-    runStatus = {
-      ...runStatus,
+    runner.process.kill();
+    runner.status = {
+      ...runner.status,
       running: false,
       paused: false,
       finished_at: new Date().toISOString(),
       message: 'ยกเลิกงานโพสต์แล้ว',
     };
+    runStatus = runner.status;
     res.json({ ok: true, status: runStatus });
   } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ error: err.message });
     res.status(500).json({ error: err.message || String(err) });
   }
 });
@@ -1086,44 +1195,56 @@ app.get('/api/run/status', async (req, res) => {
       user_runs: [],
     });
   }
+  const active = getActiveRunners();
   const base = {
     ...runStatus,
-    running: !!postProcess,
-    paused: !!runStatus.paused,
+    running: active.length > 0,
+    paused: active.some((r) => !!r.status?.paused),
   };
-  if (!base.run_id) {
-    return res.json({ ...base, recent_logs: [], user_runs: [] });
-  }
   try {
-    const [logs, users] = await Promise.all([
-      db.getRunLogs({ run_id: base.run_id, limit: 200 }),
-      db.getUsers().catch(() => []),
-    ]);
+    const users = await db.getUsers().catch(() => []);
     const userNameById = new Map((Array.isArray(users) ? users : []).map((u) => [String(u.id), u.poster_name || u.name || u.id]));
-    const ordered = [...logs].reverse();
-    const byUser = new Map();
-    for (const l of ordered) {
-      const uid = String(l.user_id || '').trim();
-      const key = uid || '__unknown__';
-      if (!byUser.has(key)) {
-        byUser.set(key, {
-          user_id: uid || null,
-          user_name: uid ? (userNameById.get(uid) || uid) : 'ไม่ระบุบัญชี',
-          recent_logs: [],
-        });
-      }
-      const item = byUser.get(key);
-      item.recent_logs.push(l);
-    }
-    const user_runs = [...byUser.values()].map((g) => ({
-      ...g,
-      recent_logs: g.recent_logs.slice(0, 10),
-      message: g.recent_logs[0]?.message || base.message || '',
-      running: base.running,
-      paused: base.paused,
-      run_id: base.run_id,
-    }));
-    return res.json({ ...base, recent_logs: ordered.slice(0, 80), user_runs });
+    const allRunners = Array.from(postRunners.values())
+      .filter((r) => !!r?.run_id)
+      .sort((a, b) => new Date(b?.status?.started_at || 0).getTime() - new Date(a?.status?.started_at || 0).getTime())
+      .slice(0, 8);
+    const logsByRunId = new Map();
+    await Promise.all(
+      allRunners.map(async (r) => {
+        try {
+          const logs = await db.getRunLogs({ run_id: r.run_id, limit: 80 });
+          logsByRunId.set(r.run_id, [...logs].reverse());
+        } catch {
+          logsByRunId.set(r.run_id, []);
+        }
+      })
+    );
+    const recent_logs = [];
+    const user_runs = allRunners.map((r) => {
+      const uid = String(r.user_id || '').trim();
+      const queued = queuedAssignmentIdsByUser.get(uid);
+      const queuedCount = queued ? queued.size : 0;
+      const logs = logsByRunId.get(r.run_id) || [];
+      recent_logs.push(...logs);
+      const running = !!r.process;
+      const paused = !!r.status?.paused;
+      const message =
+        queuedCount > 0
+          ? `${r.status?.message || ''} · คิวรอต่ออีก ${queuedCount} งาน`
+          : (r.status?.message || logs[0]?.message || base.message || '');
+      return {
+        user_id: uid || null,
+        user_name: uid ? (userNameById.get(uid) || uid) : 'ไม่ระบุบัญชี',
+        recent_logs: logs.slice(0, 12),
+        message,
+        running,
+        paused,
+        queued_count: queuedCount,
+        run_id: r.run_id,
+      };
+    });
+    recent_logs.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+    return res.json({ ...base, recent_logs: recent_logs.slice(0, 120), user_runs });
   } catch {
     return res.json({ ...base, recent_logs: [], user_runs: [] });
   }

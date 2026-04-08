@@ -1140,6 +1140,16 @@ function showAppToast(message, kind = 'success') {
   }, 7500);
 }
 
+function showAssignmentPostStatus(rowEl, message, kind = 'info') {
+  if (!rowEl) return;
+  let box = rowEl.querySelector('.assignment-post-status');
+  if (!box) return;
+  const k = kind === 'error' ? 'error' : kind === 'queued' ? 'queued' : 'started';
+  box.className = `assignment-post-status assignment-post-status--${k}`;
+  box.textContent = message;
+  box.classList.remove('hidden');
+}
+
 async function getOwnerOptionsFallback() {
   const [jobs, templates] = await Promise.all([
     apiGet('jobs').catch(() => []),
@@ -3300,9 +3310,9 @@ async function loadLeadCollectTab() {
           </div>
           <p class="text-sm mb-1 text-slate-700">${escapeHtml(run.message || '-')} · ${progress}%</p>
           <div class="mb-2 grid grid-cols-3 gap-2 border-t border-slate-200 pt-2">
-            <button type="button" class="collect-status-action rounded-lg px-2 py-1 text-xs border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-40" data-action="pause" data-user-id="${uid}" ${canPause ? '' : 'disabled'}>Pause</button>
-            <button type="button" class="collect-status-action rounded-lg px-2 py-1 text-xs border border-emerald-300 text-emerald-700 hover:bg-emerald-50 disabled:opacity-40" data-action="resume" data-user-id="${uid}" ${canResume ? '' : 'disabled'}>Play</button>
-            <button type="button" class="collect-status-action rounded-lg px-2 py-1 text-xs border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-40" data-action="cancel" data-user-id="${uid}" ${canCancel ? '' : 'disabled'}>ยกเลิกงาน</button>
+            <button type="button" class="collect-status-action rounded-lg px-2 py-1 text-xs border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-40" data-action="pause" data-user-id="${uid}" ${canPause ? '' : 'disabled'}>หยุดชั่วคราว</button>
+            <button type="button" class="collect-status-action rounded-lg px-2 py-1 text-xs border border-emerald-300 text-emerald-700 hover:bg-emerald-50 disabled:opacity-40" data-action="resume" data-user-id="${uid}" ${canResume ? '' : 'disabled'}>ทำงานต่อ</button>
+            <button type="button" class="collect-status-action rounded-lg px-2 py-1 text-xs border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-40" data-action="cancel" data-user-id="${uid}" ${canCancel ? '' : 'disabled'}>ยกเลิกงานนี้</button>
           </div>
           <ul class="max-h-32 overflow-y-auto text-xs space-y-0.5 list-disc pl-4 text-slate-600">${logHtml || '<li>ยังไม่มี log ล่าสุด</li>'}</ul>
         </div>`;
@@ -3992,6 +4002,7 @@ async function loadList() {
           ${currentTab === 'assignments' ? assignmentDoerBadgeHtml : ''}
           <p class="text-sm font-medium text-slate-800 truncate">${escapeHtml(preview || item.id)}</p>
           ${currentTab === 'assignments' ? assignmentGroupsHtml : ''}
+          ${currentTab === 'assignments' ? '<p class="assignment-post-status hidden mt-1"></p>' : ''}
           ${item.title && !cfg.listFields.includes('title') ? `<p class="text-xs text-slate-500 truncate mt-0.5">${escapeHtml(item.title)}</p>` : ''}
         </div>
         ${actionsBlock}
@@ -4025,12 +4036,25 @@ async function loadList() {
             try {
               postBtn.disabled = true;
               postBtn.textContent = 'กำลังเริ่ม...';
-              await runPost([item.id]);
-              alert(
-                'กำลังสั่งเปิด Google Chrome สำหรับโพสต์ Assignment นี้\n\nถ้าไม่มีหน้าต่างขึ้น: ต้องติดตั้ง Google Chrome ในเครื่อง และดูหน้าต่าง Terminal ที่รัน npm start ว่ามี error หรือไม่'
-              );
+              const out = await runPost([item.id]);
+              if (out?.queued) {
+                showAssignmentPostStatus(
+                  row,
+                  'เข้าคิวแล้ว: บัญชี Facebook นี้กำลังโพสต์อยู่ ระบบจะเริ่มงานนี้ให้อัตโนมัติเมื่อคิวก่อนหน้าจบ',
+                  'queued'
+                );
+                showAppToast('เข้าคิวโพสต์แล้ว (บัญชีเดียวกัน)', 'success');
+              } else {
+                showAssignmentPostStatus(
+                  row,
+                  'เริ่มโพสต์ทันที: ระบบกำลังเปิด Google Chrome สำหรับ Assignment นี้',
+                  'started'
+                );
+                showAppToast('เริ่มโพสต์ทันทีแล้ว', 'success');
+              }
             } catch (e) {
-              alert('เกิดข้อผิดพลาด: ' + e.message);
+              showAssignmentPostStatus(row, `เริ่มโพสต์ไม่สำเร็จ: ${e.message}`, 'error');
+              showAppToast('เกิดข้อผิดพลาด: ' + e.message, 'error');
             } finally {
               postBtn.disabled = false;
               postBtn.textContent = origText;
@@ -4667,12 +4691,17 @@ function getPostProgressFromLogs(logs, isRunning) {
   return isRunning ? 0 : 100;
 }
 
-async function postRunControl(action) {
+async function postRunControl(action, userId = '') {
   if (action === 'cancel') {
     const ok = confirm('ยืนยันยกเลิกงานโพสต์นี้ ?');
     if (!ok) return;
   }
-  const r = await fetch(`${API}/run/post/${action}`, { method: 'POST' });
+  const body = userId ? { user_id: userId } : {};
+  const r = await fetch(`${API}/run/post/${action}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.error || `สั่ง ${action} ไม่สำเร็จ`);
 }
@@ -4722,13 +4751,15 @@ function renderPostStatusCards(status) {
       const key = escapeHtml(rawKey);
       const title = escapeHtml(String(u.user_name || u.user_id || 'ไม่ระบุบัญชี'));
       const logs = Array.isArray(u.recent_logs) ? u.recent_logs : [];
-      const isRunning = !!status?.running;
+      const isRunning = !!u?.running;
+      const isPaused = !!u?.paused;
       const isSuccessDone = !isRunning && Number(status?.exit_code) === 0;
       const isFailedDone = !isRunning && !isSuccessDone;
       const progress = getPostProgressFromLogs(logs, isRunning);
-      const canPause = isRunning && !status?.paused;
-      const canResume = isRunning && !!status?.paused;
+      const canPause = isRunning && !isPaused;
+      const canResume = isRunning && isPaused;
       const canCancel = isRunning;
+      const queuedCount = Number(u?.queued_count || 0);
       const logHtml = logs.slice(0, 5).map((l) => `<li class="pl-0.5">${escapeHtml(l.message || '')}</li>`).join('');
       const statusDot =
         isRunning
@@ -4739,7 +4770,9 @@ function renderPostStatusCards(status) {
               ? 'bg-rose-500'
               : 'bg-slate-500';
       const stateBadge = isRunning
-        ? 'กำลังโพสต์'
+        ? isPaused
+          ? 'หยุดชั่วคราว'
+          : 'กำลังโพสต์'
         : isSuccessDone
           ? 'สำเร็จ'
           : isFailedDone
@@ -4754,6 +4787,9 @@ function renderPostStatusCards(status) {
               ? 'bg-gradient-to-r from-amber-600 to-amber-400'
               : 'bg-gradient-to-r from-slate-600 to-slate-400';
       const headline = escapeHtml(String(u.message || status.message || '-'));
+      const queueBadge = queuedCount > 0
+        ? `<span class="inline-flex items-center rounded-full border border-amber-400/40 bg-amber-400/10 px-2 py-0.5 text-[10px] font-semibold text-amber-200">รอคิว ${queuedCount} งาน</span>`
+        : '';
 
       if (minimizedPostStatusUsers.has(rawKey)) {
         return `<div class="post-status-minimized w-full flex items-stretch gap-2 rounded-2xl border border-slate-600/45 bg-slate-900/95 backdrop-blur-md shadow-2xl ring-1 ring-white/[0.06] overflow-hidden" data-user-key="${key}">
@@ -4776,6 +4812,7 @@ function renderPostStatusCards(status) {
               <p class="text-[10px] font-medium uppercase tracking-wider text-slate-500">${stateBadge}</p>
             </div>
           </div>
+          ${queueBadge}
           <div class="flex items-center gap-0.5 shrink-0">
             <button type="button" class="post-status-minimize rounded-lg p-2 text-slate-500 hover:bg-slate-800 hover:text-slate-200" data-user-key="${key}" title="ย่อ" aria-label="ย่อ">
               <span class="block text-sm font-bold leading-none pb-0.5">─</span>
@@ -4795,9 +4832,9 @@ function renderPostStatusCards(status) {
             </div>
           </div>
           <div class="flex gap-2">
-            <button type="button" class="post-status-action ${btnBase} bg-amber-500/15 text-amber-100 border border-amber-500/35 hover:bg-amber-500/25" data-action="pause" ${canPause ? '' : 'disabled'}>Pause</button>
-            <button type="button" class="post-status-action ${btnBase} bg-emerald-500/15 text-emerald-100 border border-emerald-500/35 hover:bg-emerald-500/25" data-action="resume" ${canResume ? '' : 'disabled'}>Play</button>
-            <button type="button" class="post-status-action ${btnBase} bg-rose-500/15 text-rose-100 border border-rose-500/35 hover:bg-rose-500/25" data-action="cancel" ${canCancel ? '' : 'disabled'}>ยกเลิก</button>
+            <button type="button" class="post-status-action ${btnBase} bg-amber-500/15 text-amber-100 border border-amber-500/35 hover:bg-amber-500/25" data-action="pause" data-user-id="${key}" ${canPause ? '' : 'disabled'}>หยุดชั่วคราว</button>
+            <button type="button" class="post-status-action ${btnBase} bg-emerald-500/15 text-emerald-100 border border-emerald-500/35 hover:bg-emerald-500/25" data-action="resume" data-user-id="${key}" ${canResume ? '' : 'disabled'}>ทำงานต่อ</button>
+            <button type="button" class="post-status-action ${btnBase} bg-rose-500/15 text-rose-100 border border-rose-500/35 hover:bg-rose-500/25" data-action="cancel" data-user-id="${key}" ${canCancel ? '' : 'disabled'}>ยกเลิกงานนี้</button>
           </div>
           <ul class="max-h-24 overflow-y-auto text-[11px] space-y-1 list-none border-t border-slate-800/80 pt-2 text-slate-400">${logHtml || '<li class="text-slate-600">ยังไม่มี log ล่าสุด</li>'}</ul>
         </div>
@@ -4823,9 +4860,10 @@ function renderPostStatusCards(status) {
     btn.addEventListener('click', async () => {
       try {
         const action = String(btn.getAttribute('data-action') || '').trim();
+        const userId = String(btn.getAttribute('data-user-id') || '').trim();
         if (!action) return;
         btn.disabled = true;
-        await postRunControl(action);
+        await postRunControl(action, userId);
         await refreshRunStatusBanner();
       } catch (e) {
         alert(e.message || String(e));
