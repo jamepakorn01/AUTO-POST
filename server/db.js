@@ -929,7 +929,8 @@ async function ensureJobsProvinceColumns() {
 async function getAssignments() {
   await ensureAssignmentsJobIdsColumn();
   const hasMulti = await assignmentsHasJobIdsColumn();
-  const { rows } = await query(`SELECT * FROM ${ASSIGNMENTS_TABLE} ORDER BY created_at DESC`);
+  // เรียงลำดับจากเก่าไปใหม่ เพื่อให้ลำดับการสร้าง Assignment = ลำดับการโพสต์
+  const { rows } = await query(`SELECT * FROM ${ASSIGNMENTS_TABLE} ORDER BY created_at ASC`);
   if (hasMulti) {
     return rows.map((r) => ({ ...r, job_ids: r.job_ids || [], group_ids: r.group_ids || [] }));
   }
@@ -951,7 +952,8 @@ async function getAssignmentById(id) {
 async function getAssignmentsByUserId(userId) {
   await ensureAssignmentsJobIdsColumn();
   const hasMulti = await assignmentsHasJobIdsColumn();
-  const { rows } = await query(`SELECT * FROM ${ASSIGNMENTS_TABLE} WHERE user_id = $1 ORDER BY created_at DESC`, [
+  // เรียง Assignment ของ User นี้จากเก่าไปใหม่ เพื่อให้ลำดับการโพสต์ตรงกับลำดับที่สร้าง
+  const { rows } = await query(`SELECT * FROM ${ASSIGNMENTS_TABLE} WHERE user_id = $1 ORDER BY created_at ASC`, [
     userId,
   ]);
   if (hasMulti) {

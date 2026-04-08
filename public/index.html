@@ -553,9 +553,196 @@
     .list-state--error .empty-title.list-error-title { color: #b91c1c; }
     .list-state--error .empty-hint.list-error-msg { color: #991b1b; line-height: 1.5; }
 
-    /* Groups: department band */
+    /* Groups: department band + folder cards */
+    .groups-paginated-body {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .group-dept-section {
+      padding: 0.25rem 0 0.5rem;
+    }
+    .group-dept-section > .group-dept-bar {
+      margin-bottom: 0.75rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 2px solid rgba(220, 38, 38, 0.22);
+    }
     .group-dept-bar {
-      border-bottom-color: rgba(220, 38, 38, 0.2) !important;
+      font-size: 0.9375rem;
+      font-weight: 700;
+      color: #0f172a;
+      letter-spacing: 0.02em;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .group-dept-bar::before {
+      content: '';
+      width: 4px;
+      height: 1.1em;
+      border-radius: 2px;
+      background: #dc2626;
+      flex-shrink: 0;
+    }
+    .group-folder-card {
+      border-radius: 0.75rem;
+      border: 1px solid #e2e8f0;
+      background: #fff;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+      overflow: hidden;
+      transition: box-shadow 0.15s ease, border-color 0.15s ease;
+    }
+    .group-folder-card:hover {
+      border-color: #cbd5e1;
+      box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+    }
+    .group-folder-head {
+      padding: 0.875rem 1rem 0.75rem;
+      background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+      border-bottom: 1px solid #e2e8f0;
+    }
+    .group-folder-badges {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem 0.5rem;
+    }
+    .group-folder-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      max-width: 100%;
+      padding: 0.35rem 0.65rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      line-height: 1.25;
+      border: 1px solid transparent;
+    }
+    .group-folder-badge__k {
+      font-weight: 700;
+      opacity: 0.75;
+      flex-shrink: 0;
+    }
+    .group-folder-badge__v {
+      min-width: 0;
+      word-break: break-word;
+    }
+    .group-folder-badge--job {
+      background: #fff;
+      border-color: #e2e8f0;
+      color: #334155;
+    }
+    /* จังหวัด: โทนฟ้า อ่านง่าย แยกจากป้ายแดงของธีม */
+    .group-folder-badge--place {
+      background: #eff6ff;
+      border-color: #93c5fd;
+      color: #1e3a8a;
+    }
+    .group-folder-badge--place .group-folder-badge__k {
+      color: #2563eb;
+      opacity: 1;
+    }
+    .group-folder-badge--place .group-folder-badge__v {
+      color: #172554;
+      font-weight: 700;
+    }
+    .group-folder-badge--adder {
+      background: #fff;
+      border-color: #e2e8f0;
+      color: #475569;
+    }
+    .group-folder-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.75rem 1rem;
+      padding: 0.75rem 1rem;
+      background: #fafafa;
+    }
+    .group-folder-count {
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 0.35rem 0.5rem;
+    }
+    .group-folder-count-num {
+      font-size: 1.25rem;
+      font-weight: 800;
+      color: #0f172a;
+      line-height: 1;
+    }
+    .group-folder-count-label {
+      font-size: 0.8125rem;
+      color: #64748b;
+      font-weight: 500;
+    }
+    .group-folder-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .group-folder-actions .btn-secondary {
+      min-height: 2.25rem;
+    }
+    .group-folder-del {
+      min-height: 2.25rem;
+      font-size: 0.8125rem;
+      padding: 0.35rem 0.85rem;
+      border-radius: 0.5rem;
+      border: 1px solid #fecaca;
+      color: #b91c1c;
+      background: #fff;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.12s ease;
+    }
+    .group-folder-del:hover {
+      background: #fef2f2;
+    }
+    .group-section-ids.group-folder-ids {
+      border-top: 1px solid #e2e8f0;
+      background: #fff;
+    }
+    .group-folder-ids > summary {
+      padding: 0.65rem 1rem;
+      font-size: 0.8125rem;
+      font-weight: 600;
+      color: #475569;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .group-folder-ids > summary::before {
+      content: '▸';
+      display: inline-block;
+      transition: transform 0.15s ease;
+      color: #94a3b8;
+      font-size: 0.7rem;
+    }
+    .group-folder-ids[open] > summary::before {
+      transform: rotate(90deg);
+    }
+    .group-folder-id-list {
+      padding: 0 1rem 0.875rem;
+      margin: 0;
+      max-height: 14rem;
+      overflow-y: auto;
+      display: grid;
+      gap: 0.35rem;
+    }
+    .group-folder-id-line {
+      font-family: ui-monospace, monospace;
+      font-size: 0.7rem;
+      line-height: 1.4;
+      color: #334155;
+      padding: 0.35rem 0.5rem;
+      background: #f8fafc;
+      border-radius: 0.35rem;
+      border: 1px solid #f1f5f9;
+      word-break: break-all;
     }
 
     /* List rows */
@@ -950,6 +1137,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=fb-api-hint-20260408d"></script>
+  <script src="app.js?v=fb-api-hint-20260408f"></script>
 </body>
 </html>

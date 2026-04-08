@@ -15,6 +15,8 @@
     "migrate:assignment-job-ids": "node scripts/migrate-assignment-job-ids.js",
     "migrate:assignment-job-id-nullable": "node scripts/drop-assignment-job-id-not-null.js",
     "migrate:post-logs": "node scripts/migrate-post-logs.js",
+    "import:krungsri": "node scripts/import-driver-pack.js krungsri-driver-bank-pack.json",
+    "import:tum": "node scripts/import-driver-pack.js tum-driver-pack.json",
     "worker:post": "node scripts/post-remote-worker.js",
     "test": "playwright test --headed --project=\"Google Chrome\"",
     "test:logic": "playwright test tests/collectPostComments.logic.spec.ts --project=ChromiumCollect",

@@ -39,6 +39,23 @@ async function postFacebookSessionCheck(userId) {
 
 let collectStatusPollTimer = null;
 
+/** รีโหลดรายการ «เก็บ Comment» หลังโพสต์/คิวจบ — ตั้งค่าใน loadLeadCollectTab */
+let leadCollectRefetchFn = null;
+let lastPostQueueGloballyBusy = false;
+
+function tryLeadCollectRefetch() {
+  try {
+    leadCollectRefetchFn?.();
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+/** โพสต์จบแล้ว log อาจเข้า DB ช้ากว่า response เล็กน้อย */
+function scheduleLeadCollectRefetchDelays() {
+  [400, 2000, 5000].forEach((ms) => setTimeout(() => tryLeadCollectRefetch(), ms));
+}
+
 function stopCollectStatusPoll() {
   if (collectStatusPollTimer) {
     clearInterval(collectStatusPollTimer);
@@ -308,6 +325,180 @@ let editingGroupFolder = null;
 let renderFormVersion = 0;
 const TAB_WITH_LIST_TOOLS = new Set(['groups', 'jobs', 'assignments']);
 const BULK_MODE = { jobs: false, assignments: false };
+const LIST_PAGE_SIZE = 10;
+let listPaginationPage = { jobs: 1, groups: 1, assignments: 1 };
+
+function removePaginationBar(tabKey) {
+  document.getElementById(`list-pagination-${tabKey}`)?.remove();
+}
+
+function mountPaginationBar(insertAfter, tabKey, page, totalItems, onPageChange) {
+  removePaginationBar(tabKey);
+  if (totalItems <= LIST_PAGE_SIZE) return;
+  const totalPages = Math.ceil(totalItems / LIST_PAGE_SIZE);
+  const cur = Math.min(Math.max(1, page), totalPages);
+  const bar = document.createElement('div');
+  bar.id = `list-pagination-${tabKey}`;
+  bar.className =
+    'list-pagination flex flex-wrap items-center justify-center gap-3 py-4 px-2 text-sm text-slate-600 border-t border-slate-200/80 mt-2';
+  bar.innerHTML = `
+    <button type="button" class="list-pag-prev btn-secondary text-sm py-1.5 px-3"${cur <= 1 ? ' disabled' : ''}>ก่อนหน้า</button>
+    <span>หน้า <strong>${cur}</strong> / ${totalPages} <span class="text-slate-400">(${totalItems} รายการ)</span></span>
+    <button type="button" class="list-pag-next btn-secondary text-sm py-1.5 px-3"${cur >= totalPages ? ' disabled' : ''}>ถัดไป</button>
+  `;
+  bar.querySelector('.list-pag-prev').onclick = () => {
+    if (cur > 1) onPageChange(cur - 1);
+  };
+  bar.querySelector('.list-pag-next').onclick = () => {
+    if (cur < totalPages) onPageChange(cur + 1);
+  };
+  insertAfter.insertAdjacentElement('afterend', bar);
+}
+
+function readJobFilterInputs(container) {
+  const tools = container.querySelector('.list-toolbar');
+  if (!tools) {
+    return { q: '', fDept: '', fOwner: '', fProv: '', fPos: '' };
+  }
+  return {
+    q: String(tools.querySelector('#list-search-input')?.value || '')
+      .trim()
+      .toLowerCase(),
+    fDept: String(tools.querySelector('#job-filter-dept')?.value || '').trim(),
+    fOwner: String(tools.querySelector('#job-filter-owner')?.value || '')
+      .trim()
+      .toLowerCase(),
+    fProv: String(tools.querySelector('#job-filter-province')?.value || '')
+      .trim()
+      .toLowerCase(),
+    fPos: String(tools.querySelector('#job-filter-position')?.value || '')
+      .trim()
+      .toLowerCase(),
+  };
+}
+
+function jobItemMatchesFilter(item, st) {
+  const rowDept = String(item.department || '').trim() || '__none__';
+  const okDept = !st.fDept || rowDept === st.fDept;
+  const okOwner =
+    !st.fOwner || String(item.owner || '').trim().toLowerCase() === st.fOwner;
+  const pvRow = formatProvinceLabel(item.province, item.province_note);
+  const okProv =
+    !st.fProv || String(pvRow || '').trim().toLowerCase() === st.fProv;
+  const okPos =
+    !st.fPos ||
+    String(item.job_position || '').trim().toLowerCase() === st.fPos;
+  const hay = [
+    item.title,
+    item.company,
+    item.owner,
+    item.job_position,
+    item.caption,
+    item.apply_link,
+    item.department,
+    pvRow,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  const okText = !st.q || hay.includes(st.q);
+  return okDept && okOwner && okProv && okPos && okText;
+}
+
+function readAssignmentFilterInputs(container) {
+  const tools = container.querySelector('.list-toolbar');
+  if (!tools) {
+    return { q: '', fDept: '', fUser: '', fDoer: '', fJobOwner: '' };
+  }
+  return {
+    q: String(tools.querySelector('#list-search-input')?.value || '')
+      .trim()
+      .toLowerCase(),
+    fDept: String(tools.querySelector('#assign-filter-dept')?.value || '').trim(),
+    fUser: String(tools.querySelector('#assign-filter-user')?.value || '').trim(),
+    fDoer: String(tools.querySelector('#assign-filter-doer')?.value || '')
+      .trim()
+      .toLowerCase(),
+    fJobOwner: String(tools.querySelector('#assign-filter-job-owner')?.value || '')
+      .trim()
+      .toLowerCase(),
+  };
+}
+
+function readGroupFilterInputs(container) {
+  const tools = container.querySelector('.list-toolbar');
+  if (!tools) {
+    return { q: '', fDept: '', fJob: '', fProvince: '', fAdder: '' };
+  }
+  return {
+    q: String(tools.querySelector('#list-search-input')?.value || '')
+      .trim()
+      .toLowerCase(),
+    fDept: String(tools.querySelector('#group-filter-dept')?.value || '').trim(),
+    fJob: String(tools.querySelector('#group-filter-job')?.value || '')
+      .trim()
+      .toLowerCase(),
+    fProvince: String(tools.querySelector('#group-filter-province')?.value || '')
+      .trim()
+      .toLowerCase(),
+    fAdder: String(tools.querySelector('#group-filter-adder')?.value || '')
+      .trim()
+      .toLowerCase(),
+  };
+}
+
+function assignmentMatchesFilter(item, st, userMap, jobMap, jobOwnerById) {
+  const rowDept = String(item.department || '').trim() || '__none__';
+  const okDept = !st.fDept || rowDept === st.fDept;
+  const okUser = !st.fUser || String(item.user_id || '') === st.fUser;
+  const fallbackDoer = item.id ? getCachedAssignmentDoer(item.id) : '';
+  const doerRow = String(item.doer_name || fallbackDoer || '').trim().toLowerCase();
+  const okDoer = !st.fDoer || doerRow === st.fDoer;
+  const jidsRow = Array.isArray(item.job_ids) ? item.job_ids : [];
+  const ownersLowerSet = new Set();
+  jidsRow.forEach((jid) => {
+    const o = jobOwnerById?.get(String(jid));
+    if (o) ownersLowerSet.add(String(o).trim().toLowerCase());
+  });
+  const okJobOwner = !st.fJobOwner || ownersLowerSet.has(st.fJobOwner);
+  const userLabel = userMap?.get(String(item.user_id || '')) || item.user_id || '';
+  const selectedJobTitles = jidsRow
+    .map((id) => jobMap?.get(String(id)) || String(id))
+    .filter(Boolean);
+  const hay = [
+    userLabel,
+    item.user_id,
+    item.doer_name,
+    fallbackDoer,
+    ...selectedJobTitles,
+    String(item.id || ''),
+    item.department,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  const okText = !st.q || hay.includes(st.q);
+  return okDept && okUser && okDoer && okJobOwner && okText;
+}
+
+function groupFolderMatchesFilter(entry, st) {
+  const okDept = !st.fDept || entry.deptK === st.fDept;
+  const secJob = String(entry.jt || '').trim().toLowerCase();
+  const secProvince = String(formatProvinceLabel(entry.pv, entry.pn) || '')
+    .trim()
+    .toLowerCase();
+  const secAdder = String(entry.ab || '').trim().toLowerCase();
+  const okJob = !st.fJob || secJob === st.fJob;
+  const okProvince = !st.fProvince || secProvince === st.fProvince;
+  const okAdder = !st.fAdder || secAdder === st.fAdder;
+  const headerText = `ประเภทงาน: ${entry.jt || '-'} -- จังหวัด: ${formatProvinceLabel(entry.pv, entry.pn)} -- ชื่อผู้เพิ่ม group : ${entry.ab || ''}`.toLowerCase();
+  const idsText = entry.bucket
+    .map((g) => String(g.fb_group_id || g.id || ''))
+    .join(' ')
+    .toLowerCase();
+  const okText = !st.q || headerText.includes(st.q) || idsText.includes(st.q);
+  return okDept && okJob && okProvince && okAdder && okText;
+}
 
 function createListTools(tab, container, apiEntity, sourceItems = [], meta = {}) {
   if (!TAB_WITH_LIST_TOOLS.has(tab)) return null;
@@ -468,6 +659,11 @@ function createListTools(tab, container, apiEntity, sourceItems = [], meta = {})
   const applyFilter = () => {
     const q = String(searchInput?.value || '').trim().toLowerCase();
     if (tab === 'groups') {
+      if (typeof meta.paginatedRender === 'function') {
+        listPaginationPage.groups = 1;
+        meta.paginatedRender();
+        return;
+      }
       const fDept = String(groupDeptSel?.value || '').trim();
       const fJob = String(groupJobSel?.value || '').trim().toLowerCase();
       const fProvince = String(groupProvinceSel?.value || '').trim().toLowerCase();
@@ -494,6 +690,11 @@ function createListTools(tab, container, apiEntity, sourceItems = [], meta = {})
       return;
     }
     if (tab === 'jobs') {
+      if (typeof meta.paginatedRender === 'function') {
+        listPaginationPage.jobs = 1;
+        meta.paginatedRender();
+        return;
+      }
       const fDept = String(jobDeptSel?.value || '').trim();
       const fOwner = String(jobOwnerSel?.value || '').trim().toLowerCase();
       const fProv = String(jobProvinceSel?.value || '').trim().toLowerCase();
@@ -510,6 +711,11 @@ function createListTools(tab, container, apiEntity, sourceItems = [], meta = {})
       return;
     }
     if (tab === 'assignments') {
+      if (typeof meta.paginatedRender === 'function') {
+        listPaginationPage.assignments = 1;
+        meta.paginatedRender();
+        return;
+      }
       const fDept = String(assignDeptSel?.value || '').trim();
       const fUser = String(assignUserSel?.value || '').trim();
       const fDoer = String(assignDoerSel?.value || '').trim().toLowerCase();
@@ -2875,6 +3081,19 @@ async function loadLeadCollectTab() {
   const selUser = document.getElementById('collect-user-id')?.value || '';
   const qFilter = String(document.getElementById('collect-search')?.value || '').trim();
 
+  const onVercelHost =
+    typeof location !== 'undefined' && /\.vercel\.app$/i.test(String(location.hostname || ''));
+  const vercelCollectHint = onVercelHost
+    ? `<div class="rounded-lg border border-amber-200 bg-amber-50/95 text-amber-950 text-xs p-3 mb-4 leading-relaxed">
+        <p class="font-semibold mb-1">เก็บ Comment ผ่าน Vercel โดยตรง — ทำบนเซิร์ฟเวอร์ไม่ได้</p>
+        <p class="text-amber-900/90">ระบบใช้ Playwright + ไฟล์ session ในโฟลเดอร์ <code class="bg-amber-100 px-1 rounded">.auth</code> ซึ่งรันบนคลาวด์ไม่ได้
+        ให้รัน <code class="bg-amber-100 px-1 rounded">npm start</code> บนเครื่องคุณ ตั้ง <code class="bg-amber-100 px-1 rounded">DATABASE_URL</code>
+        ให้ชี้ฐานข้อมูลเดียวกับ Vercel แล้วเปิด Admin ที่ <code class="bg-amber-100 px-1 rounded">http://localhost:พอร์ต</code>
+        ไปที่แท็บนี้ — เลือกวันที่/บัญชีเดียวกับตอนโพสต์ แล้วกด <strong>เก็บ Comment</strong></p>
+        <p class="mt-2 text-amber-800/90">รายการโพสต์ด้านล่างดึงจาก DB เดียวกัน: หลังโพสต์จบ (รวมคิว Worker) หน้านี้จะพยายามรีโหลดอัตโนมัติ หรือเปลี่ยนวันที่/บัญชีแล้วกลับมาเพื่อดึงใหม่</p>
+      </div>`
+    : '';
+
   let userOptions = [];
   try {
     userOptions = await apiGet('users');
@@ -2892,6 +3111,7 @@ async function loadLeadCollectTab() {
     .join('');
 
   container.innerHTML = `
+    ${vercelCollectHint}
     <div class="rounded-xl border border-slate-200 bg-white p-4 mb-4 shadow-sm">
       <p class="text-sm font-semibold text-slate-800 mb-1">เลือกช่วงวันที่โพสต์และบัญชี</p>
       <p class="text-xs text-slate-500 mb-3">เลือกทีละบัญชีแล้วกดเก็บ Comment จากนั้นเปลี่ยนบัญชีแล้วกดรันต่อได้ โดยสถานะจะแยกเป็นกล่องรายบัญชีอัตโนมัติ</p>
@@ -2920,6 +3140,7 @@ async function loadLeadCollectTab() {
         <button type="button" id="collect-clear-search" class="btn-secondary text-sm">ล้างช่องค้นหา</button>
         <button type="button" id="collect-select-all-btn" class="btn-secondary text-sm">เลือกทั้งหมดที่แสดง</button>
         <button type="button" id="collect-download-report-btn" class="btn-secondary text-sm">ดาวน์โหลดรายงาน (CSV)</button>
+        <button type="button" id="collect-refresh-posts-btn" class="btn-secondary text-sm">โหลดรายการใหม่</button>
         <button type="button" id="collect-run-headless-btn" class="btn-primary text-sm">เก็บ Comment</button>
         <span id="collect-selected-count" class="text-xs text-slate-600 self-center">เลือก 0 รายการ</span>
       </div>
@@ -3163,7 +3384,7 @@ async function loadLeadCollectTab() {
         cachedCollectStats.total_in_range > 0 &&
         cachedCollectStats.with_link === 0
       ) {
-        hint = `พบ ${cachedCollectStats.total_in_range} รายการในระบบแต่ยังไม่มีลิงก์โพสต์ — มักเกิดจากการเก็บลิงก์หลังโพสต์ไม่สำเร็จ (ดู log บอท) หรือบันทึก Log ก่อนได้ลิงก์`;
+        hint = `พบ ${cachedCollectStats.total_in_range} รายการในระบบแต่ยังไม่มีลิงก์โพสต์ — Facebook เปลี่ยนหน้า my_posted / ฟีดกลุ่มทำให้ดึงลิงก์ไม่เจอ หรือบอทหมดเวลาเก็บลิงก์ ดู Terminal ของ worker ว่ามีข้อความ [saveToSheet] ไม่พบลิงก์ — แถวนี้ยังเก็บ Comment ไม่ได้จนกว่าจะมีลิงก์ใน Post Log`;
       } else {
         hint =
           'รายการมาจาก Post Log (วันที่ตามเวลาไทย + บัญชีที่เลือก + ต้องมีลิงก์โพสต์) — ถ้ารันโพสต์จากเครื่องโดยตรง ให้ตั้ง RUN_LOG_API_URL ให้ตรงพอร์ตเซิร์ฟเวอร์';
@@ -3267,6 +3488,9 @@ async function loadLeadCollectTab() {
     }
   };
 
+  document.getElementById('collect-refresh-posts-btn')?.addEventListener('click', () => {
+    runFetch();
+  });
   document.getElementById('collect-download-report-btn')?.addEventListener('click', () => {
     if (!cachedRows.length) return alert('ยังไม่มีข้อมูลสำหรับดาวน์โหลด');
     downloadCollectCsv(cachedRows);
@@ -3341,6 +3565,15 @@ async function loadLeadCollectTab() {
   if (String(document.getElementById('collect-user-id')?.value || '').trim()) {
     runFetch();
   }
+
+  leadCollectRefetchFn = () => {
+    if (currentTab !== 'lead_collect') return;
+    const uid = String(document.getElementById('collect-user-id')?.value || '').trim();
+    const ds = document.getElementById('collect-date-start')?.value;
+    const de = document.getElementById('collect-date-end')?.value;
+    if (!uid || !ds || !de) return;
+    runFetch();
+  };
 }
 
 async function loadReportsTab() {
@@ -3596,6 +3829,20 @@ function jobListCellHtml(label, value, isTitleCol = false, provinceSubtitle = nu
   </div>`;
 }
 
+/** ป้ายกำกับในหน้า Groups (ประเภทงาน / จังหวัด / ผู้เพิ่ม) */
+function buildGroupFolderBadge(variant, keyLabel, valueText) {
+  const wrap = document.createElement('span');
+  wrap.className = `group-folder-badge group-folder-badge--${variant}`;
+  const k = document.createElement('span');
+  k.className = 'group-folder-badge__k';
+  k.textContent = keyLabel;
+  const v = document.createElement('span');
+  v.className = 'group-folder-badge__v';
+  v.textContent = valueText && String(valueText).trim() ? String(valueText).trim() : '—';
+  wrap.append(k, v);
+  return wrap;
+}
+
 async function loadList() {
   const cfg = TAB_CONFIG[currentTab];
   const container = document.getElementById('list-container');
@@ -3646,161 +3893,11 @@ async function loadList() {
       return;
     }
 
-    container.innerHTML = '';
-    const listTools = createListTools(
-      currentTab,
-      container,
-      cfg.api,
-      items,
-      currentTab === 'assignments' ? { userMap, jobMap, jobOwnerById } : {}
-    );
-    let listAppendTarget = container;
-    if (currentTab === 'jobs') {
-      const jobScroll = document.createElement('div');
-      jobScroll.className = 'jobs-list-scroll';
-      container.appendChild(jobScroll);
-      const jobHeader = document.createElement('div');
-      jobHeader.className = 'jobs-list-header';
-      jobHeader.innerHTML = `
-        <span class="jobs-h-spacer" aria-hidden="true"></span>
-        <span>ชื่องาน</span>
-        <span>ตำแหน่ง</span>
-        <span>จังหวัด</span>
-        <span>เจ้าของงาน</span>
-        <span>บริษัท/หน่วย</span>
-        <span>แผนก</span>
-        <span class="jobs-h-actions">การทำงาน</span>
-      `;
-      jobScroll.appendChild(jobHeader);
-      listAppendTarget = jobScroll;
-    }
-    if (currentTab === 'groups') {
-      const deptStorageKey = (item) => {
-        const d = String(item.department || '').trim();
-        return d || '__none__';
-      };
-      const deptDisplayLabel = (key) => (key === '__none__' ? 'ไม่ระบุแผนก' : key);
-      const deptOrder = new Map(DEPARTMENTS.map((d, i) => [d, i]));
-      const sortDeptKeys = (keys) =>
-        [...keys].sort((a, b) => {
-          if (a === '__none__') return 1;
-          if (b === '__none__') return -1;
-          const ia = deptOrder.has(a);
-          const ib = deptOrder.has(b);
-          if (ia && ib) return deptOrder.get(a) - deptOrder.get(b);
-          if (ia) return -1;
-          if (ib) return 1;
-          return String(a).localeCompare(String(b), 'th');
-        });
+    if (currentTab === 'jobs') listPaginationPage.jobs = 1;
+    if (currentTab === 'groups') listPaginationPage.groups = 1;
+    if (currentTab === 'assignments') listPaginationPage.assignments = 1;
 
-      const groupKey = (item) => {
-        const pv = parseProvinceWithInlineNote(item.province, item.province_note);
-        return JSON.stringify([item.job_type || '', pv.province || '', pv.province_note || '', item.added_by || '']);
-      };
-      const byDept = new Map();
-      items.forEach((item) => {
-        const dk = deptStorageKey(item);
-        if (!byDept.has(dk)) byDept.set(dk, []);
-        byDept.get(dk).push(item);
-      });
-
-      sortDeptKeys(Array.from(byDept.keys())).forEach((deptK) => {
-        const deptItems = byDept.get(deptK);
-        const deptSection = document.createElement('div');
-        deptSection.className = 'group-dept-section mb-6 last:mb-0';
-        deptSection.dataset.department = deptK;
-        const deptHeader = document.createElement('div');
-        deptHeader.className =
-          'group-dept-bar text-base font-semibold text-slate-800 mb-3 px-1 pb-2 border-b-2 border-emerald-600/25';
-        deptHeader.textContent = `แผนก: ${deptDisplayLabel(deptK)}`;
-        deptSection.appendChild(deptHeader);
-        const innerWrap = document.createElement('div');
-        innerWrap.className = 'space-y-4';
-
-        const buckets = new Map();
-        deptItems.forEach((item) => {
-          const k = groupKey(item);
-          if (!buckets.has(k)) buckets.set(k, []);
-          buckets.get(k).push(item);
-        });
-        const sortedKeys = Array.from(buckets.keys()).sort((a, b) => {
-          const [jtA, pA, pnA, abA] = JSON.parse(a);
-          const [jtB, pB, pnB, abB] = JSON.parse(b);
-          const c1 = jtA.localeCompare(jtB, 'th');
-          if (c1 !== 0) return c1;
-          const c2 = pA.localeCompare(pB, 'th');
-          if (c2 !== 0) return c2;
-          const c3 = pnA.localeCompare(pnB, 'th');
-          if (c3 !== 0) return c3;
-          return abA.localeCompare(abB, 'th');
-        });
-        sortedKeys.forEach((k) => {
-          const [jt, pv, pn, ab] = JSON.parse(k);
-          const section = document.createElement('div');
-          section.className = 'group-section mb-4 last:mb-0 rounded-lg border border-slate-200 overflow-hidden bg-white shadow-sm';
-          section.dataset.jobType = String(jt || '').trim();
-          section.dataset.province = String(formatProvinceLabel(pv, pn) || '').trim();
-          section.dataset.adder = String(ab || '').trim();
-          const header = document.createElement('div');
-          header.className = 'px-3 py-2.5 bg-slate-100 border-b border-slate-200 text-sm font-semibold text-slate-800';
-          const adder = (ab && String(ab).trim()) || '-';
-          header.textContent = `ประเภทงาน: ${jt || '-'} -- จังหวัด: ${formatProvinceLabel(pv, pn)} -- ชื่อผู้เพิ่ม Group : ${adder}`;
-          section.appendChild(header);
-          const bucket = buckets.get(k);
-          bucket.sort((a, b) =>
-            String(b.fb_group_id || '').localeCompare(String(a.fb_group_id || ''), undefined, {
-              numeric: true,
-              sensitivity: 'base',
-            })
-          );
-          const body = document.createElement('div');
-          body.className = 'px-3 py-2 bg-slate-50/80 flex flex-wrap items-center gap-3';
-          const count = document.createElement('span');
-          count.className = 'text-sm text-slate-600';
-          count.textContent = `${bucket.length} กลุ่มในโฟลเดอร์นี้`;
-          const editBtn = document.createElement('button');
-          editBtn.type = 'button';
-          editBtn.className = 'btn-secondary text-sm py-1.5 px-3';
-          editBtn.textContent = 'แก้ไข';
-          editBtn.onclick = () => openEditGroupFolder(bucket);
-          const delAllBtn = document.createElement('button');
-          delAllBtn.type = 'button';
-          delAllBtn.className =
-            'text-sm py-1.5 px-3 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition';
-          delAllBtn.textContent = 'ลบทั้งหมด';
-          delAllBtn.onclick = () => deleteGroupFolder(bucket);
-          body.appendChild(count);
-          body.appendChild(editBtn);
-          body.appendChild(delAllBtn);
-          section.appendChild(body);
-          const idDetails = document.createElement('details');
-          idDetails.className = 'group-section-ids border-t border-slate-200 bg-white';
-          const idSumm = document.createElement('summary');
-          idSumm.className =
-            'px-3 py-2 text-sm text-slate-600 font-medium cursor-pointer select-none hover:bg-slate-50 hover:text-slate-900';
-          idSumm.textContent = `ดูรายการ Group ID (${bucket.length})`;
-          idDetails.appendChild(idSumm);
-          const idWrap = document.createElement('div');
-          idWrap.className =
-            'px-3 pb-3 pt-0 max-h-56 overflow-y-auto space-y-1 font-mono text-xs text-slate-700 break-all';
-          bucket.forEach((g) => {
-            const line = document.createElement('div');
-            const gid = String(g.fb_group_id || g.id || '').trim();
-            line.textContent = gid || '—';
-            idWrap.appendChild(line);
-          });
-          idDetails.appendChild(idWrap);
-          section.appendChild(idDetails);
-          innerWrap.appendChild(section);
-        });
-        deptSection.appendChild(innerWrap);
-        container.appendChild(deptSection);
-      });
-      applyGroupsFolderHighlight(container);
-      return;
-    }
-
-    items.forEach((item) => {
+    function appendListRowItem(item, targetEl) {
       const row = document.createElement('div');
       row.className = currentTab === 'jobs' ? 'list-row list-row--jobs' : 'list-row';
       let preview = '';
@@ -3818,9 +3915,8 @@ async function loadList() {
           .map((id) => jobMap?.get(String(id)) || String(id))
           .filter(Boolean);
         const selectedGroupIds = Array.isArray(item.group_ids) ? item.group_ids : [];
-        const jobsLabel = selectedJobTitles.length > 0
-          ? selectedJobTitles.join(', ')
-          : 'ยังไม่ได้เลือกงาน';
+        const jobsLabel =
+          selectedJobTitles.length > 0 ? selectedJobTitles.join(', ') : 'ยังไม่ได้เลือกงาน';
         preview = `Facebook: ${userLabel} · งาน: ${jobsLabel}`;
         if (selectedGroupIds.length > 0) {
           const folderSet = new Set();
@@ -3829,19 +3925,23 @@ async function loadList() {
             if (meta?.folderLabel) folderSet.add(meta.folderLabel);
           });
           const folderLabels = Array.from(folderSet);
-          const chips = folderLabels.length > 0
-            ? folderLabels
-            : selectedGroupIds.map((id) => `กลุ่ม: ${id}`);
+          const chips =
+            folderLabels.length > 0
+              ? folderLabels
+              : selectedGroupIds.map((id) => `กลุ่ม: ${id}`);
           assignmentGroupsHtml = `
             <div class="mt-1.5 flex flex-wrap gap-1.5">
               ${chips.map((txt) => `<span class="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-xs border border-emerald-200">${escapeHtml(txt)}</span>`).join('')}
             </div>
           `;
         } else {
-          assignmentGroupsHtml = '<p class="text-xs text-slate-500 mt-1">กลุ่มที่จะโพสต์: ใช้กลุ่มจาก User</p>';
+          assignmentGroupsHtml =
+            '<p class="text-xs text-slate-500 mt-1">กลุ่มที่จะโพสต์: ใช้กลุ่มจาก User</p>';
         }
       } else if (currentTab === 'schedules') {
-        const whenText = item.scheduled_for ? new Date(item.scheduled_for).toLocaleString('th-TH') : '-';
+        const whenText = item.scheduled_for
+          ? new Date(item.scheduled_for).toLocaleString('th-TH')
+          : '-';
         const count = Array.isArray(item.assignment_ids) ? item.assignment_ids.length : 0;
         preview = `${item.name || '-'} · เวลา: ${whenText} · ${count} assignments · สถานะ: ${item.status || '-'}`;
       } else {
@@ -3858,7 +3958,9 @@ async function loadList() {
       const bulkSelectLabel = canMultiDelete
         ? `<label class="row-select-wrap shrink-0 flex items-center ${currentTab === 'jobs' ? 'jobs-row-check' : 'mr-2'} ${
             currentTab === 'jobs'
-              ? (BULK_MODE[currentTab] ? '' : 'jobs-bulk-off')
+              ? BULK_MODE[currentTab]
+                ? ''
+                : 'jobs-bulk-off'
               : BULK_MODE[currentTab]
                 ? ''
                 : 'hidden'
@@ -3924,7 +4026,9 @@ async function loadList() {
               postBtn.disabled = true;
               postBtn.textContent = 'กำลังเริ่ม...';
               await runPost([item.id]);
-              alert('กำลังสั่งเปิด Google Chrome สำหรับโพสต์ Assignment นี้\n\nถ้าไม่มีหน้าต่างขึ้น: ต้องติดตั้ง Google Chrome ในเครื่อง และดูหน้าต่าง Terminal ที่รัน npm start ว่ามี error หรือไม่');
+              alert(
+                'กำลังสั่งเปิด Google Chrome สำหรับโพสต์ Assignment นี้\n\nถ้าไม่มีหน้าต่างขึ้น: ต้องติดตั้ง Google Chrome ในเครื่อง และดูหน้าต่าง Terminal ที่รัน npm start ว่ามี error หรือไม่'
+              );
             } catch (e) {
               alert('เกิดข้อผิดพลาด: ' + e.message);
             } finally {
@@ -3991,8 +4095,303 @@ async function loadList() {
       }
       row.querySelector('.edit-btn').onclick = () => editItem(item);
       row.querySelector('.delete-btn').onclick = () => deleteItem(item.id, item);
-      listAppendTarget.appendChild(row);
-    });
+      targetEl.appendChild(row);
+    }
+
+    container.innerHTML = '';
+    let listToolsRef = null;
+    let jobScrollEl = null;
+    let assignRowsWrapEl = null;
+    let groupsBodyWrapEl = null;
+
+    const assignMetaBase =
+      currentTab === 'assignments' ? { userMap, jobMap, jobOwnerById } : {};
+    let renderJobsPage = null;
+    let renderAssignmentsPage = null;
+    let renderGroupsPage = null;
+
+    if (currentTab === 'jobs') {
+      jobScrollEl = document.createElement('div');
+      jobScrollEl.className = 'jobs-list-scroll';
+      renderJobsPage = () => {
+        if (!jobScrollEl) return;
+        jobScrollEl.querySelectorAll('.list-row--jobs').forEach((r) => r.remove());
+        jobScrollEl.querySelectorAll('.jobs-filter-empty').forEach((r) => r.remove());
+        removePaginationBar('jobs');
+        const st = readJobFilterInputs(container);
+        const filtered = items.filter((it) => jobItemMatchesFilter(it, st));
+        if (filtered.length === 0) {
+          const empty = document.createElement('p');
+          empty.className = 'jobs-filter-empty p-4 text-sm text-slate-500';
+          empty.textContent = 'ไม่มีรายการที่ตรงกับตัวกรอง';
+          jobScrollEl.appendChild(empty);
+          listToolsRef?.applyBulkMode?.(BULK_MODE.jobs);
+          return;
+        }
+        const totalPages = Math.max(1, Math.ceil(filtered.length / LIST_PAGE_SIZE));
+        const page = Math.min(Math.max(1, listPaginationPage.jobs), totalPages);
+        listPaginationPage.jobs = page;
+        const slice = filtered.slice((page - 1) * LIST_PAGE_SIZE, page * LIST_PAGE_SIZE);
+        slice.forEach((item) => appendListRowItem(item, jobScrollEl));
+        mountPaginationBar(jobScrollEl, 'jobs', page, filtered.length, (np) => {
+          listPaginationPage.jobs = np;
+          renderJobsPage();
+        });
+        listToolsRef?.applyBulkMode?.(BULK_MODE.jobs);
+      };
+      assignMetaBase.paginatedRender = renderJobsPage;
+    }
+
+    if (currentTab === 'assignments') {
+      assignRowsWrapEl = document.createElement('div');
+      assignRowsWrapEl.className = 'assign-rows-wrap w-full';
+      assignRowsWrapEl.id = 'assign-rows-wrap';
+      renderAssignmentsPage = () => {
+        if (!assignRowsWrapEl) return;
+        assignRowsWrapEl.innerHTML = '';
+        removePaginationBar('assignments');
+        const st = readAssignmentFilterInputs(container);
+        const filtered = items.filter((it) =>
+          assignmentMatchesFilter(it, st, userMap, jobMap, jobOwnerById)
+        );
+        if (filtered.length === 0) {
+          const empty = document.createElement('p');
+          empty.className = 'p-4 text-sm text-slate-500';
+          empty.textContent = 'ไม่มีรายการที่ตรงกับตัวกรอง';
+          assignRowsWrapEl.appendChild(empty);
+          listToolsRef?.applyBulkMode?.(BULK_MODE.assignments);
+          return;
+        }
+        const totalPages = Math.max(1, Math.ceil(filtered.length / LIST_PAGE_SIZE));
+        const page = Math.min(Math.max(1, listPaginationPage.assignments), totalPages);
+        listPaginationPage.assignments = page;
+        const slice = filtered.slice((page - 1) * LIST_PAGE_SIZE, page * LIST_PAGE_SIZE);
+        slice.forEach((item) => appendListRowItem(item, assignRowsWrapEl));
+        mountPaginationBar(assignRowsWrapEl, 'assignments', page, filtered.length, (np) => {
+          listPaginationPage.assignments = np;
+          renderAssignmentsPage();
+        });
+        listToolsRef?.applyBulkMode?.(BULK_MODE.assignments);
+      };
+      assignMetaBase.paginatedRender = renderAssignmentsPage;
+    }
+
+    if (currentTab === 'groups') {
+      const deptStorageKeyG = (item) => {
+        const d = String(item.department || '').trim();
+        return d || '__none__';
+      };
+      const deptDisplayLabelG = (key) => (key === '__none__' ? 'ไม่ระบุแผนก' : key);
+      const deptOrderG = new Map(DEPARTMENTS.map((d, i) => [d, i]));
+      const sortDeptKeysG = (keys) =>
+        [...keys].sort((a, b) => {
+          if (a === '__none__') return 1;
+          if (b === '__none__') return -1;
+          const ia = deptOrderG.has(a);
+          const ib = deptOrderG.has(b);
+          if (ia && ib) return deptOrderG.get(a) - deptOrderG.get(b);
+          if (ia) return -1;
+          if (ib) return 1;
+          return String(a).localeCompare(String(b), 'th');
+        });
+      const groupKeyG = (item) => {
+        const pv = parseProvinceWithInlineNote(item.province, item.province_note);
+        return JSON.stringify([
+          item.job_type || '',
+          pv.province || '',
+          pv.province_note || '',
+          item.added_by || '',
+        ]);
+      };
+      const byDeptG = new Map();
+      items.forEach((item) => {
+        const dk = deptStorageKeyG(item);
+        if (!byDeptG.has(dk)) byDeptG.set(dk, []);
+        byDeptG.get(dk).push(item);
+      });
+      const groupFlatFolders = [];
+      sortDeptKeysG(Array.from(byDeptG.keys())).forEach((deptK) => {
+        const deptItems = byDeptG.get(deptK);
+        const buckets = new Map();
+        deptItems.forEach((item) => {
+          const k = groupKeyG(item);
+          if (!buckets.has(k)) buckets.set(k, []);
+          buckets.get(k).push(item);
+        });
+        const sortedKeys = Array.from(buckets.keys()).sort((a, b) => {
+          const [jtA, pA, pnA, abA] = JSON.parse(a);
+          const [jtB, pB, pnB, abB] = JSON.parse(b);
+          const c1 = jtA.localeCompare(jtB, 'th');
+          if (c1 !== 0) return c1;
+          const c2 = pA.localeCompare(pB, 'th');
+          if (c2 !== 0) return c2;
+          const c3 = pnA.localeCompare(pnB, 'th');
+          if (c3 !== 0) return c3;
+          return abA.localeCompare(abB, 'th');
+        });
+        sortedKeys.forEach((k) => {
+          const [jt, pv, pn, ab] = JSON.parse(k);
+          const bucket = [...(buckets.get(k) || [])];
+          bucket.sort((a, b) =>
+            String(b.fb_group_id || '').localeCompare(String(a.fb_group_id || ''), undefined, {
+              numeric: true,
+              sensitivity: 'base',
+            })
+          );
+          groupFlatFolders.push({ deptK, jt, pv, pn, ab, bucket });
+        });
+      });
+
+      groupsBodyWrapEl = document.createElement('div');
+      groupsBodyWrapEl.className = 'groups-paginated-body w-full';
+
+      renderGroupsPage = () => {
+        if (!groupsBodyWrapEl) return;
+        groupsBodyWrapEl.innerHTML = '';
+        removePaginationBar('groups');
+        const st = readGroupFilterInputs(container);
+        const filtered = groupFlatFolders.filter((e) => groupFolderMatchesFilter(e, st));
+        if (filtered.length === 0) {
+          groupsBodyWrapEl.innerHTML =
+            '<p class="text-sm text-slate-500 py-4 px-2">ไม่มีโฟลเดอร์ที่ตรงกับตัวกรอง</p>';
+          return;
+        }
+        const totalPages = Math.max(1, Math.ceil(filtered.length / LIST_PAGE_SIZE));
+        const page = Math.min(Math.max(1, listPaginationPage.groups), totalPages);
+        listPaginationPage.groups = page;
+        const slice = filtered.slice((page - 1) * LIST_PAGE_SIZE, page * LIST_PAGE_SIZE);
+        const deptKeysOnPage = sortDeptKeysG([...new Set(slice.map((e) => e.deptK))]);
+        deptKeysOnPage.forEach((deptK) => {
+          const entries = slice.filter((e) => e.deptK === deptK);
+          const deptSection = document.createElement('div');
+          deptSection.className = 'group-dept-section mb-6 last:mb-0';
+          deptSection.dataset.department = deptK;
+          const deptHeader = document.createElement('div');
+          deptHeader.className = 'group-dept-bar';
+          deptHeader.textContent = `แผนก: ${deptDisplayLabelG(deptK)}`;
+          deptSection.appendChild(deptHeader);
+          const innerWrap = document.createElement('div');
+          innerWrap.className = 'space-y-4';
+          entries.forEach((entry) => {
+            const { jt, pv, pn, ab, bucket } = entry;
+            const section = document.createElement('div');
+            section.className = 'group-folder-card group-section mb-4 last:mb-0';
+            section.dataset.jobType = String(jt || '').trim();
+            section.dataset.province = String(formatProvinceLabel(pv, pn) || '').trim();
+            section.dataset.adder = String(ab || '').trim();
+
+            const head = document.createElement('div');
+            head.className = 'group-folder-head';
+            const badges = document.createElement('div');
+            badges.className = 'group-folder-badges';
+            badges.appendChild(buildGroupFolderBadge('job', 'ประเภทงาน', jt || '-'));
+            badges.appendChild(
+              buildGroupFolderBadge('place', 'จังหวัด / พื้นที่', formatProvinceLabel(pv, pn) || '-')
+            );
+            badges.appendChild(
+              buildGroupFolderBadge('adder', 'ผู้เพิ่มกลุ่ม', (ab && String(ab).trim()) || '-')
+            );
+            head.appendChild(badges);
+            section.appendChild(head);
+
+            const toolbar = document.createElement('div');
+            toolbar.className = 'group-folder-toolbar';
+            const countWrap = document.createElement('div');
+            countWrap.className = 'group-folder-count';
+            const countNum = document.createElement('span');
+            countNum.className = 'group-folder-count-num';
+            countNum.textContent = String(bucket.length);
+            const countLabel = document.createElement('span');
+            countLabel.className = 'group-folder-count-label';
+            countLabel.textContent = 'กลุ่มในโฟลเดอร์นี้';
+            countWrap.append(countNum, countLabel);
+
+            const actions = document.createElement('div');
+            actions.className = 'group-folder-actions';
+            const editBtn = document.createElement('button');
+            editBtn.type = 'button';
+            editBtn.className = 'btn-secondary text-sm py-1.5 px-3';
+            editBtn.textContent = 'แก้ไข';
+            editBtn.onclick = () => openEditGroupFolder(bucket);
+            const delAllBtn = document.createElement('button');
+            delAllBtn.type = 'button';
+            delAllBtn.className = 'group-folder-del';
+            delAllBtn.textContent = 'ลบทั้งหมด';
+            delAllBtn.onclick = () => deleteGroupFolder(bucket);
+            actions.append(editBtn, delAllBtn);
+            toolbar.append(countWrap, actions);
+            section.appendChild(toolbar);
+
+            const idDetails = document.createElement('details');
+            idDetails.className = 'group-section-ids group-folder-ids';
+            const idSumm = document.createElement('summary');
+            idSumm.className =
+              'cursor-pointer select-none list-none hover:bg-slate-50 transition-colors rounded-b-lg';
+            idSumm.textContent = `ดูรายการ Group ID (${bucket.length})`;
+            idDetails.appendChild(idSumm);
+            const idWrap = document.createElement('div');
+            idWrap.className = 'group-folder-id-list';
+            bucket.forEach((g) => {
+              const line = document.createElement('div');
+              line.className = 'group-folder-id-line';
+              const gid = String(g.fb_group_id || g.id || '').trim();
+              line.textContent = gid || '—';
+              idWrap.appendChild(line);
+            });
+            idDetails.appendChild(idWrap);
+            section.appendChild(idDetails);
+            innerWrap.appendChild(section);
+          });
+          deptSection.appendChild(innerWrap);
+          groupsBodyWrapEl.appendChild(deptSection);
+        });
+        applyGroupsFolderHighlight(container);
+        mountPaginationBar(groupsBodyWrapEl, 'groups', page, filtered.length, (np) => {
+          listPaginationPage.groups = np;
+          renderGroupsPage();
+        });
+      };
+      assignMetaBase.paginatedRender = renderGroupsPage;
+    }
+
+    const listTools = createListTools(currentTab, container, cfg.api, items, assignMetaBase);
+    listToolsRef = listTools;
+    let listAppendTarget = container;
+    if (currentTab === 'jobs') {
+      container.appendChild(jobScrollEl);
+      const jobHeader = document.createElement('div');
+      jobHeader.className = 'jobs-list-header';
+      jobHeader.innerHTML = `
+        <span class="jobs-h-spacer" aria-hidden="true"></span>
+        <span>ชื่องาน</span>
+        <span>ตำแหน่ง</span>
+        <span>จังหวัด</span>
+        <span>เจ้าของงาน</span>
+        <span>บริษัท/หน่วย</span>
+        <span>แผนก</span>
+        <span class="jobs-h-actions">การทำงาน</span>
+      `;
+      jobScrollEl.appendChild(jobHeader);
+      listAppendTarget = jobScrollEl;
+      renderJobsPage();
+      listTools?.applyBulkMode?.(BULK_MODE[currentTab]);
+      return;
+    }
+    if (currentTab === 'assignments') {
+      container.appendChild(assignRowsWrapEl);
+      listAppendTarget = assignRowsWrapEl;
+      renderAssignmentsPage();
+      listTools?.applyBulkMode?.(BULK_MODE[currentTab]);
+      return;
+    }
+    if (currentTab === 'groups') {
+      container.appendChild(groupsBodyWrapEl);
+      renderGroupsPage();
+      listTools?.applyBulkMode?.(BULK_MODE[currentTab]);
+      return;
+    }
+
+    items.forEach((item) => appendListRowItem(item, listAppendTarget));
     listTools?.applyBulkMode?.(BULK_MODE[currentTab]);
   } catch (e) {
     container.innerHTML = listErrorHtml(e.message);
@@ -4168,9 +4567,16 @@ async function refreshRunStatusBanner() {
   const el = document.getElementById('run-status-text');
   if (!el) return;
   try {
-    const r = await fetch(`${API}/run/status`);
+    const r = await fetch(`${API}/run/status`, { cache: 'no-store' });
     if (!r.ok) return;
     const s = await r.json();
+    const queueBusy = Number(s.queued_count) > 0;
+    const postBusy = !!s.running || queueBusy;
+    if (lastPostQueueGloballyBusy && !postBusy) {
+      scheduleLeadCollectRefetchDelays();
+    }
+    lastPostQueueGloballyBusy = postBusy;
+
     const parts = [s.message || '-'];
     if (s.running) parts.push('(กำลังทำงาน)');
     if (s.run_id) parts.push(`Run: ${String(s.run_id).slice(0, 10)}...`);
