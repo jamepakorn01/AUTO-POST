@@ -3340,11 +3340,12 @@ async function loadLeadCollectTab() {
     typeof location !== 'undefined' && /\.vercel\.app$/i.test(String(location.hostname || ''));
   const vercelCollectHint = onVercelHost
     ? `<div class="rounded-lg border border-amber-200 bg-amber-50/95 text-amber-950 text-xs p-3 mb-4 leading-relaxed">
-        <p class="font-semibold mb-1">เก็บ Comment ผ่าน Vercel โดยตรง — ทำบนเซิร์ฟเวอร์ไม่ได้</p>
-        <p class="text-amber-900/90">ระบบใช้ Playwright + ไฟล์ session ในโฟลเดอร์ <code class="bg-amber-100 px-1 rounded">.auth</code> ซึ่งรันบนคลาวด์ไม่ได้
-        ให้รัน <code class="bg-amber-100 px-1 rounded">npm start</code> บนเครื่องคุณ ตั้ง <code class="bg-amber-100 px-1 rounded">DATABASE_URL</code>
-        ให้ชี้ฐานข้อมูลเดียวกับ Vercel แล้วเปิด Admin ที่ <code class="bg-amber-100 px-1 rounded">http://localhost:พอร์ต</code>
-        ไปที่แท็บนี้ — เลือกวันที่/บัญชีเดียวกับตอนโพสต์ แล้วกด <strong>เก็บ Comment</strong></p>
+        <p class="font-semibold mb-1">บน Vercel ปุ่มเก็บ Comment = เข้าคิวใน DB</p>
+        <p class="text-amber-900/90">ให้เปิด worker บนเครื่องที่มี Chrome/Session โดยรัน
+        <code class="bg-amber-100 px-1 rounded">npm run worker:collect</code> พร้อมตั้ง
+        <code class="bg-amber-100 px-1 rounded">WORKER_API_BASE</code> และ
+        <code class="bg-amber-100 px-1 rounded">POST_WORKER_TOKEN</code> ให้ตรงกับฝั่งเซิร์ฟเวอร์</p>
+        <p class="mt-1 text-amber-800/90">ถ้าต้องการให้เก็บอัตโนมัติทุกเช้า เปิด <code class="bg-amber-100 px-1 rounded">AUTO_COLLECT_ENABLED=1</code> บนเครื่อง worker</p>
         <p class="mt-2 text-amber-800/90">รายการโพสต์ด้านล่างดึงจาก DB เดียวกัน: หลังโพสต์จบ (รวมคิว Worker) หน้านี้จะพยายามรีโหลดอัตโนมัติ หรือเปลี่ยนวันที่/บัญชีแล้วกลับมาเพื่อดึงใหม่</p>
       </div>`
     : '';
@@ -3783,6 +3784,9 @@ async function loadLeadCollectTab() {
       if (!res.ok || data.ok === false) {
         const firstErr = Array.isArray(data.errors) && data.errors[0] ? data.errors[0].error : '';
         throw new Error(firstErr || data.error || res.statusText);
+      }
+      if (data?.queued || data?.worker_queue) {
+        showAppToast('รับคิวเก็บ Comment แล้ว — รอ worker:collect บนเครื่องคุณรับงาน', 'success');
       }
       const newRunIds = [];
       if (Array.isArray(data.started) && data.started.length > 0) {

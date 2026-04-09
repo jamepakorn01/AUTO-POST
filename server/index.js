@@ -1334,12 +1334,15 @@ app.get('/api/run/status', async (req, res) => {
 app.patch('/api/post-logs/:id/collect-result', async (req, res) => {
   try {
     const token = req.get('x-collect-token');
-    if (!leadCollectBot.isCollectPatchTokenValid(token)) {
+    const workerAuthed = USE_REMOTE_POST_WORKER && isValidPostWorkerToken(req);
+    if (!leadCollectBot.isCollectPatchTokenValid(token) && !workerAuthed) {
       return res.status(403).json({ error: 'Forbidden' });
     }
     const { comment_count, customer_phone } = req.body || {};
     await leadCollectBot.updatePostLogFromCollect(req.params.id, comment_count, customer_phone);
-    await leadCollectBot.onCollectPatchDone(token);
+    if (leadCollectBot.isCollectPatchTokenValid(token)) {
+      await leadCollectBot.onCollectPatchDone(token);
+    }
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1362,6 +1365,31 @@ app.get('/api/run/collect-export/live.csv', async (req, res) => {
 });
 
 app.get('/api/run/collect-status', async (req, res) => {
+  if (USE_REMOTE_POST_WORKER) {
+    const user_id = req.query.user_id ? String(req.query.user_id) : '';
+    const q = await db.getCollectRunQueueSummary(user_id || undefined).catch(() => ({ queued: 0, running: 0, latest: null }));
+    const latest = q.latest || {};
+    const running = Number(q.running || 0) > 0;
+    const queued = Number(q.queued || 0);
+    return res.json({
+      running,
+      paused: false,
+      run_id: latest.run_id || null,
+      started_at: latest.started_at || latest.created_at || null,
+      finished_at: latest.finished_at || null,
+      exit_code: null,
+      error: latest.error || null,
+      queued_count: queued,
+      queue_latest: latest,
+      message: running
+        ? (latest.message || 'Worker กำลังเก็บ Comment...')
+        : queued > 0
+          ? `มีคิวเก็บ Comment รอ ${queued} งาน (รอ Worker บนเครื่องคุณ)`
+          : (latest.message || 'ยังไม่เคยเริ่มเก็บ Comment'),
+      recent_logs: [],
+      runs: [],
+    });
+  }
   const user_id = req.query.user_id ? String(req.query.user_id) : '';
   const base = leadCollectBot.getCollectRunStatus(user_id || undefined);
   const runs = Array.isArray(base?.runs) ? base.runs : [base];
@@ -1391,12 +1419,16 @@ function requirePostWorkerToken(req, res) {
     res.status(503).json({ error: 'POST_WORKER_TOKEN not configured on server' });
     return false;
   }
-  const token = String(req.get('x-worker-token') || '').trim();
-  if (!token || token !== POST_WORKER_TOKEN) {
+  if (!isValidPostWorkerToken(req)) {
     res.status(403).json({ error: 'Forbidden worker token' });
     return false;
   }
   return true;
+}
+
+function isValidPostWorkerToken(req) {
+  const token = String(req.get('x-worker-token') || '').trim();
+  return !!token && token === POST_WORKER_TOKEN;
 }
 
 app.post('/api/worker/post/claim', async (req, res) => {
@@ -1480,8 +1512,116 @@ app.post('/api/worker/post/sweep-stale', async (req, res) => {
   }
 });
 
+app.post('/api/worker/collect/claim', async (req, res) => {
+  try {
+    if (!requirePostWorkerToken(req, res)) return;
+    const workerId = String(req.body?.worker_id || req.get('x-worker-id') || '').trim() || 'worker';
+    const runId = `collect_${db.generateRunId()}`;
+    const job = await db.claimNextCollectRunJob(workerId, runId);
+    if (!job) return res.json({ ok: true, job: null });
+    const user_id = String(job.user_id || '').trim();
+    const post_log_ids = Array.isArray(job.post_log_ids) ? job.post_log_ids.map(String).filter(Boolean) : [];
+    const rows = await db.getPostLogsByIdsForUser(post_log_ids, user_id);
+    const posts = rows
+      .filter((r) => r.post_link && String(r.post_link).trim())
+      .map((r) => ({
+        post_log_id: String(r.id),
+        post_link: String(r.post_link).trim(),
+        job_id: String(r.job_id || ''),
+        job_title: String(r.job_title || ''),
+        owner: String(r.owner || ''),
+        company: String(r.company || ''),
+        poster_name: String(r.poster_name || ''),
+        group_name: String(r.group_name || ''),
+        posted_date_bangkok: r.created_at
+          ? new Date(r.created_at).toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' })
+          : '',
+        created_at: r.created_at ? new Date(r.created_at).toISOString() : '',
+      }));
+    if (posts.length === 0) {
+      await db.completeCollectRunJob(job.id, {
+        ok: false,
+        run_id: runId,
+        message: 'collect job has no valid post links',
+        error: 'no_post_links',
+      });
+      return res.json({ ok: true, job: null });
+    }
+    return res.json({
+      ok: true,
+      job: {
+        id: job.id,
+        run_id: runId,
+        user_id,
+        post_log_ids,
+        posts,
+      },
+    });
+  } catch (e) {
+    return res.status(500).json({ error: e.message || String(e) });
+  }
+});
+
+app.post('/api/worker/collect/complete', async (req, res) => {
+  try {
+    if (!requirePostWorkerToken(req, res)) return;
+    const id = String(req.body?.job_id || '').trim();
+    if (!id) return res.status(400).json({ error: 'job_id required' });
+    const row = await db.completeCollectRunJob(id, {
+      ok: !!req.body?.ok,
+      run_id: req.body?.run_id || null,
+      message: req.body?.message || null,
+      error: req.body?.error || null,
+    });
+    if (!row) return res.status(404).json({ error: 'job not found' });
+    return res.json({ ok: true, job: row });
+  } catch (e) {
+    return res.status(500).json({ error: e.message || String(e) });
+  }
+});
+
+app.get('/api/worker/collect/queue-status', async (req, res) => {
+  try {
+    if (!requirePostWorkerToken(req, res)) return;
+    const summary = await db.getCollectRunQueueSummary();
+    const staleAfter = Math.min(
+      24 * 60,
+      Math.max(15, Number(req.query.stale_after_minutes) || Number(process.env.COLLECT_RUN_STALE_MINUTES) || 180)
+    );
+    const stale_running = await db.countStaleRunningCollectJobs(staleAfter);
+    res.json({
+      ok: true,
+      stale_after_minutes: staleAfter,
+      stale_running,
+      queued: summary.queued,
+      running: summary.running,
+      latest: summary.latest,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message || String(e) });
+  }
+});
+
+app.post('/api/worker/collect/sweep-stale', async (req, res) => {
+  try {
+    if (!requirePostWorkerToken(req, res)) return;
+    const maxAge = Math.min(
+      24 * 60,
+      Math.max(15, Number(req.body?.max_age_minutes) || Number(process.env.COLLECT_RUN_STALE_MINUTES) || 180)
+    );
+    const n = await db.failStaleRunningCollectJobs(maxAge);
+    if (n > 0) {
+      logger.warn('collect_queue.sweep_stale', { failed_stale_count: n, max_age_minutes: maxAge });
+    }
+    res.json({ ok: true, failed_stale_count: n, max_age_minutes: maxAge });
+  } catch (e) {
+    res.status(500).json({ error: e.message || String(e) });
+  }
+});
+
 app.post('/api/run/collect-comments/pause', async (req, res) => {
   try {
+    if (USE_REMOTE_POST_WORKER) return res.status(400).json({ error: 'โหมดคิว worker ยังไม่รองรับ pause ผ่าน API นี้' });
     const user_id = String(req.body?.user_id || '').trim();
     if (!user_id) return res.status(400).json({ error: 'กรุณาระบุ user_id' });
     const status = await leadCollectBot.pauseCollectRun(user_id);
@@ -1493,6 +1633,7 @@ app.post('/api/run/collect-comments/pause', async (req, res) => {
 
 app.post('/api/run/collect-comments/resume', async (req, res) => {
   try {
+    if (USE_REMOTE_POST_WORKER) return res.status(400).json({ error: 'โหมดคิว worker ยังไม่รองรับ resume ผ่าน API นี้' });
     const user_id = String(req.body?.user_id || '').trim();
     if (!user_id) return res.status(400).json({ error: 'กรุณาระบุ user_id' });
     const status = await leadCollectBot.resumeCollectRun(user_id);
@@ -1504,6 +1645,7 @@ app.post('/api/run/collect-comments/resume', async (req, res) => {
 
 app.post('/api/run/collect-comments/cancel', async (req, res) => {
   try {
+    if (USE_REMOTE_POST_WORKER) return res.status(400).json({ error: 'โหมดคิว worker ยังไม่รองรับ cancel ผ่าน API นี้' });
     const user_id = String(req.body?.user_id || '').trim();
     if (!user_id) return res.status(400).json({ error: 'กรุณาระบุ user_id' });
     const status = await leadCollectBot.cancelCollectRun(user_id);
@@ -1515,6 +1657,47 @@ app.post('/api/run/collect-comments/cancel', async (req, res) => {
 
 app.post('/api/run/collect-comments', async (req, res) => {
   try {
+    if (USE_REMOTE_POST_WORKER) {
+      const runs = Array.isArray(req.body?.runs) ? req.body.runs : null;
+      const jobs = runs && runs.length > 0
+        ? runs.map((x) => ({
+            user_id: String(x?.user_id || '').trim(),
+            post_log_ids: Array.isArray(x?.post_log_ids) ? x.post_log_ids : [],
+          }))
+        : [{
+            user_id: String(req.body?.user_id || '').trim(),
+            post_log_ids: Array.isArray(req.body?.post_log_ids) ? req.body.post_log_ids : [],
+          }];
+      const started = [];
+      const errors = [];
+      for (const j of jobs) {
+        try {
+          const row = await db.enqueueCollectRunJob({
+            user_id: j.user_id,
+            post_log_ids: j.post_log_ids,
+            requested_by: req.ip || 'web',
+            message: `queued collect ${Array.isArray(j.post_log_ids) ? j.post_log_ids.length : 0} posts`,
+          });
+          started.push({ user_id: j.user_id, queued: true, queue_id: row?.id || null });
+        } catch (err) {
+          errors.push({ user_id: j.user_id, error: err.message || String(err), statusCode: err.statusCode || 500 });
+        }
+      }
+      const status = await db.getCollectRunQueueSummary().catch(() => ({ queued: 0, running: 0, latest: null }));
+      return res.status(started.length > 0 ? 200 : 400).json({
+        ok: started.length > 0,
+        queued: true,
+        worker_queue: true,
+        started,
+        errors,
+        status: {
+          running: Number(status.running || 0) > 0,
+          queued_count: Number(status.queued || 0),
+          queue_latest: status.latest || null,
+          message: Number(status.running || 0) > 0 ? 'Worker กำลังเก็บ Comment...' : 'รับคิวเก็บ Comment แล้ว',
+        },
+      });
+    }
     const runs = Array.isArray(req.body?.runs) ? req.body.runs : null;
     if (runs && runs.length > 0) {
       const started = [];

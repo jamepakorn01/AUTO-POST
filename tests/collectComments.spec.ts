@@ -45,9 +45,13 @@ async function patchCollectResult(
 ): Promise<void> {
   const base = (process.env.RUN_LOG_API_URL || 'http://127.0.0.1:3000').replace(/\/$/, '');
   const token = process.env.COLLECT_PATCH_TOKEN || '';
+  const workerToken = process.env.COLLECT_WORKER_TOKEN || '';
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['x-collect-token'] = token;
+  if (workerToken) headers['x-worker-token'] = workerToken;
   const res = await fetch(`${base}/api/post-logs/${encodeURIComponent(postLogId)}/collect-result`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json', 'x-collect-token': token },
+    headers,
     body: JSON.stringify(body),
   });
   if (!res.ok) {

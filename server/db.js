@@ -1704,6 +1704,144 @@ async function failStaleRunningPostJobs(maxAgeMinutes) {
   return rows.length;
 }
 
+// --- Remote collect worker queue ---
+async function ensureCollectRunQueueTable() {
+  await query(`
+    CREATE TABLE IF NOT EXISTS collect_run_queue (
+      id VARCHAR(50) PRIMARY KEY,
+      user_id VARCHAR(50) NOT NULL,
+      post_log_ids JSONB NOT NULL DEFAULT '[]',
+      status VARCHAR(30) NOT NULL DEFAULT 'queued', -- queued | running | completed | failed | cancelled
+      run_id VARCHAR(50),
+      requested_by VARCHAR(255),
+      worker_id VARCHAR(255),
+      message TEXT,
+      error TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      started_at TIMESTAMPTZ,
+      finished_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+}
+
+async function enqueueCollectRunJob(data = {}) {
+  await ensureCollectRunQueueTable();
+  const id = generateId();
+  const userId = String(data.user_id || '').trim();
+  if (!userId) throw new Error('user_id is required');
+  const postLogIds = normalizeIdArray(data.post_log_ids);
+  if (postLogIds.length === 0) throw new Error('post_log_ids is required');
+  await query(
+    `INSERT INTO collect_run_queue (id, user_id, post_log_ids, status, requested_by, message)
+     VALUES ($1, $2, $3::jsonb, 'queued', $4, $5)`,
+    [id, userId, JSON.stringify(postLogIds), data.requested_by || null, data.message || 'collect queued from web']
+  );
+  const { rows } = await query(`SELECT * FROM collect_run_queue WHERE id = $1`, [id]);
+  return rows[0] || null;
+}
+
+async function claimNextCollectRunJob(workerId, runId) {
+  await ensureCollectRunQueueTable();
+  const wid = String(workerId || '').trim() || 'worker';
+  const rid = String(runId || '').trim() || null;
+  const { rows } = await query(
+    `WITH next AS (
+       SELECT id
+       FROM collect_run_queue
+       WHERE status = 'queued'
+       ORDER BY created_at ASC
+       LIMIT 1
+       FOR UPDATE SKIP LOCKED
+     )
+     UPDATE collect_run_queue q
+     SET status = 'running',
+         worker_id = $1,
+         run_id = COALESCE(q.run_id, $2),
+         started_at = NOW(),
+         updated_at = NOW(),
+         message = 'worker accepted collect job'
+     FROM next
+     WHERE q.id = next.id
+     RETURNING q.*`,
+    [wid, rid]
+  );
+  if (rows.length === 0) return null;
+  return rows[0];
+}
+
+async function completeCollectRunJob(id, data = {}) {
+  await ensureCollectRunQueueTable();
+  const ok = !!data.ok;
+  const status = ok ? 'completed' : 'failed';
+  const { rows } = await query(
+    `UPDATE collect_run_queue
+     SET status = $2,
+         run_id = COALESCE($3, run_id),
+         message = COALESCE($4, message),
+         error = $5,
+         finished_at = NOW(),
+         updated_at = NOW()
+     WHERE id = $1
+     RETURNING *`,
+    [String(id || ''), status, data.run_id || null, data.message || null, data.error || null]
+  );
+  return rows[0] || null;
+}
+
+async function getCollectRunQueueSummary(userId) {
+  await ensureCollectRunQueueTable();
+  const uid = String(userId || '').trim();
+  const where = uid ? 'WHERE user_id = $1' : '';
+  const params = uid ? [uid] : [];
+  const [countsRes, latestRes] = await Promise.all([
+    query(
+      `SELECT
+         COUNT(*) FILTER (WHERE status='queued')::int AS queued,
+         COUNT(*) FILTER (WHERE status='running')::int AS running
+       FROM collect_run_queue ${where}`,
+      params
+    ),
+    query(`SELECT * FROM collect_run_queue ${where} ORDER BY created_at DESC LIMIT 1`, params),
+  ]);
+  const c = countsRes.rows[0] || { queued: 0, running: 0 };
+  return {
+    queued: Number(c.queued) || 0,
+    running: Number(c.running) || 0,
+    latest: latestRes.rows[0] || null,
+  };
+}
+
+async function countStaleRunningCollectJobs(maxAgeMinutes) {
+  await ensureCollectRunQueueTable();
+  const m = Math.max(1, Math.floor(Number(maxAgeMinutes) || 180));
+  const { rows } = await query(
+    `SELECT COUNT(*)::int AS c FROM collect_run_queue
+     WHERE status = 'running'
+       AND started_at < NOW() - ($1::int * INTERVAL '1 minute')`,
+    [m]
+  );
+  return Number(rows[0]?.c) || 0;
+}
+
+async function failStaleRunningCollectJobs(maxAgeMinutes) {
+  await ensureCollectRunQueueTable();
+  const m = Math.max(15, Math.floor(Number(maxAgeMinutes) || 180));
+  const { rows } = await query(
+    `UPDATE collect_run_queue
+     SET status = 'failed',
+         error = COALESCE(NULLIF(TRIM(error), ''), 'stale_running_watchdog'),
+         message = 'watchdog: collect running exceeded max age — release slot',
+         finished_at = NOW(),
+         updated_at = NOW()
+     WHERE status = 'running'
+       AND started_at < NOW() - ($1::int * INTERVAL '1 minute')
+     RETURNING id`,
+    [m]
+  );
+  return rows.length;
+}
+
 // --- Config for Bot ---
 async function getDynamicConfig() {
   const [users, groups, jobs, assignments] = await Promise.all([
@@ -1751,6 +1889,7 @@ async function initSchema() {
   await ensurePostLogsCustomerPhoneWide().catch(() => {});
   await ensureAssignmentsJobIdsColumn().catch(() => {});
   await ensurePostRunQueueTable().catch(() => {});
+  await ensureCollectRunQueueTable().catch(() => {});
 }
 
 /** Health check: DB reachable */
@@ -1833,6 +1972,13 @@ module.exports = {
   getPostRunQueueSummary,
   countStaleRunningPostJobs,
   failStaleRunningPostJobs,
+  ensureCollectRunQueueTable,
+  enqueueCollectRunJob,
+  claimNextCollectRunJob,
+  completeCollectRunJob,
+  getCollectRunQueueSummary,
+  countStaleRunningCollectJobs,
+  failStaleRunningCollectJobs,
   generateRunId,
   getDynamicConfig,
   initSchema,
