@@ -1667,6 +1667,41 @@ async function getPostRunQueueSummary() {
   };
 }
 
+/** นับงาน running ที่ค้างเกิน maxAgeMinutes (สำหรับมอนิเตอร์) */
+async function countStaleRunningPostJobs(maxAgeMinutes) {
+  await ensurePostRunQueueTable();
+  const m = Math.max(1, Math.floor(Number(maxAgeMinutes) || 180));
+  const { rows } = await query(
+    `SELECT COUNT(*)::int AS c FROM post_run_queue
+     WHERE status = 'running'
+       AND started_at < NOW() - ($1::int * INTERVAL '1 minute')`,
+    [m]
+  );
+  return Number(rows[0]?.c) || 0;
+}
+
+/**
+ * ปิดงาน running ที่ค้างนานเกินไป (worker crash / Chrome ค้าง) — กันคิวไม่ไหล
+ * คืนจำนวนแถวที่อัปเดต
+ */
+async function failStaleRunningPostJobs(maxAgeMinutes) {
+  await ensurePostRunQueueTable();
+  const m = Math.max(15, Math.floor(Number(maxAgeMinutes) || 180));
+  const { rows } = await query(
+    `UPDATE post_run_queue
+     SET status = 'failed',
+         error = COALESCE(NULLIF(TRIM(error), ''), 'stale_running_watchdog'),
+         message = 'watchdog: running exceeded max age — release slot',
+         finished_at = NOW(),
+         updated_at = NOW()
+     WHERE status = 'running'
+       AND started_at < NOW() - ($1::int * INTERVAL '1 minute')
+     RETURNING id`,
+    [m]
+  );
+  return rows.length;
+}
+
 // --- Config for Bot ---
 async function getDynamicConfig() {
   const [users, groups, jobs, assignments] = await Promise.all([
@@ -1786,6 +1821,8 @@ module.exports = {
   claimNextPostRunJob,
   completePostRunJob,
   getPostRunQueueSummary,
+  countStaleRunningPostJobs,
+  failStaleRunningPostJobs,
   generateRunId,
   getDynamicConfig,
   initSchema,

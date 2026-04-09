@@ -1043,11 +1043,12 @@ app.post('/api/run/post', async (req, res) => {
     const assignmentIds = req.body?.assignment_ids;
     if (USE_REMOTE_POST_WORKER) {
       const ids = Array.isArray(assignmentIds) ? assignmentIds : [];
-      db.enqueuePostRunJob({
-        assignment_ids: ids,
-        requested_by: req.ip || 'web',
-        message: ids.length > 0 ? `queued ${ids.length} assignments` : 'queued all assignments',
-      }).then(() => {
+      try {
+        await db.enqueuePostRunJob({
+          assignment_ids: ids,
+          requested_by: req.ip || 'web',
+          message: ids.length > 0 ? `queued ${ids.length} assignments` : 'queued all assignments',
+        });
         runStatus = {
           ...runStatus,
           running: false,
@@ -1056,7 +1057,12 @@ app.post('/api/run/post', async (req, res) => {
           finished_at: null,
           message: 'รับคิวโพสต์แล้ว รอเครื่อง Worker รับงาน...',
         };
-      }).catch(() => {});
+      } catch (enqueueErr) {
+        logger.error('api.run.post.enqueue', { message: enqueueErr.message || String(enqueueErr) });
+        return res.status(500).json({
+          error: enqueueErr.message || 'บันทึกคิวโพสต์ไม่สำเร็จ (ตรวจสอบ DATABASE_URL / ฐานข้อมูล)',
+        });
+      }
       return res.json({
         ok: true,
         queued: true,
@@ -1339,6 +1345,47 @@ app.post('/api/worker/post/complete', async (req, res) => {
     return res.json({ ok: true, job: row });
   } catch (e) {
     return res.status(500).json({ error: e.message || String(e) });
+  }
+});
+
+/** มอนิเตอร์คิวโพสต์ (worker / worker:watch) */
+app.get('/api/worker/post/queue-status', async (req, res) => {
+  try {
+    if (!requirePostWorkerToken(req, res)) return;
+    const summary = await db.getPostRunQueueSummary();
+    const staleAfter = Math.min(
+      24 * 60,
+      Math.max(15, Number(req.query.stale_after_minutes) || Number(process.env.POST_RUN_STALE_MINUTES) || 180)
+    );
+    const stale_running = await db.countStaleRunningPostJobs(staleAfter);
+    res.json({
+      ok: true,
+      stale_after_minutes: staleAfter,
+      stale_running,
+      queued: summary.queued,
+      running: summary.running,
+      latest: summary.latest,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message || String(e) });
+  }
+});
+
+/** ล้างงาน running ค้าง (worker เรียกเป็นระยะ — ใช้ได้บน Vercel เพราะถูกเรียกจากเครื่อง worker) */
+app.post('/api/worker/post/sweep-stale', async (req, res) => {
+  try {
+    if (!requirePostWorkerToken(req, res)) return;
+    const maxAge = Math.min(
+      24 * 60,
+      Math.max(15, Number(req.body?.max_age_minutes) || Number(process.env.POST_RUN_STALE_MINUTES) || 180)
+    );
+    const n = await db.failStaleRunningPostJobs(maxAge);
+    if (n > 0) {
+      logger.warn('post_queue.sweep_stale', { failed_stale_count: n, max_age_minutes: maxAge });
+    }
+    res.json({ ok: true, failed_stale_count: n, max_age_minutes: maxAge });
+  } catch (e) {
+    res.status(500).json({ error: e.message || String(e) });
   }
 });
 

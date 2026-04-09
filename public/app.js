@@ -636,6 +636,7 @@ function createListTools(tab, container, apiEntity, sourceItems = [], meta = {})
         <div class="flex items-center gap-2 shrink-0 flex-wrap">
           <button type="button" id="bulk-mode-btn" class="btn-secondary text-sm py-1.5 px-3">เลือกหลายรายการ</button>
           <button type="button" id="select-all-btn" class="btn-secondary text-sm py-1.5 px-3 hidden">ติ๊กทั้งหมด</button>
+          <button type="button" id="bulk-post-selected-btn" class="btn-primary text-sm py-1.5 px-3 hidden">โพสต์ที่เลือก</button>
           <button type="button" id="delete-selected-btn" class="text-sm py-1.5 px-3 rounded-lg border border-red-200 text-red-600 hover:bg-red-50 transition hidden">ลบที่เลือก</button>
         </div>
       </div>
@@ -758,6 +759,7 @@ function createListTools(tab, container, apiEntity, sourceItems = [], meta = {})
     const bulkBtn = tools.querySelector('#bulk-mode-btn');
     const selectAllBtn = tools.querySelector('#select-all-btn');
     const deleteBtn = tools.querySelector('#delete-selected-btn');
+    const bulkPostBtn = tools.querySelector('#bulk-post-selected-btn');
     const getVisibleRowChecks = () =>
       Array.from(container.querySelectorAll('.list-row'))
         .filter((row) => row.style.display !== 'none')
@@ -776,12 +778,19 @@ function createListTools(tab, container, apiEntity, sourceItems = [], meta = {})
       if (selectAllBtn) {
         selectAllBtn.textContent = total > 0 && checkedCount === total ? 'ยกเลิกติ๊กทั้งหมด' : 'ติ๊กทั้งหมด';
       }
+      if (bulkPostBtn) {
+        bulkPostBtn.disabled = checkedCount === 0;
+        bulkPostBtn.classList.toggle('opacity-50', checkedCount === 0);
+        bulkPostBtn.classList.toggle('cursor-not-allowed', checkedCount === 0);
+        bulkPostBtn.textContent = checkedCount > 0 ? `โพสต์ที่เลือก (${checkedCount})` : 'โพสต์ที่เลือก';
+      }
     };
     const applyBulkMode = (enabled) => {
       BULK_MODE[tab] = !!enabled;
       if (bulkBtn) bulkBtn.textContent = BULK_MODE[tab] ? 'ยกเลิกเลือกหลายรายการ' : 'เลือกหลายรายการ';
       selectAllBtn?.classList.toggle('hidden', !BULK_MODE[tab]);
       deleteBtn?.classList.toggle('hidden', !BULK_MODE[tab]);
+      bulkPostBtn?.classList.toggle('hidden', !BULK_MODE[tab] || tab !== 'assignments');
       /* Jobs ใช้ CSS grid: ห้ามใช้ hidden (display:none) เพราะจะทำให้ช่องแรกหาย ข้อมูลเลื่อนไม่ตรงหัวตาราง */
       container.querySelectorAll('.row-select-wrap').forEach((el) => {
         if (tab === 'jobs' && el.classList.contains('jobs-row-check')) {
@@ -822,6 +831,64 @@ function createListTools(tab, container, apiEntity, sourceItems = [], meta = {})
         alert('ลบไม่สำเร็จ: ' + e.message);
       }
     };
+    if (bulkPostBtn && tab === 'assignments') {
+      bulkPostBtn.onclick = async () => {
+        const checked = Array.from(container.querySelectorAll('.row-select:checked'));
+        const pairs = checked
+          .map((cb) => {
+            const row = cb.closest('.list-row');
+            return { id: String(cb.dataset.rowId || '').trim(), row };
+          })
+          .filter((x) => x.id && x.row);
+        if (pairs.length === 0) {
+          alert('กรุณาเลือก Assignment ที่ต้องการโพสต์');
+          return;
+        }
+        bulkPostBtn.disabled = true;
+        showAppToast('กำลังส่งคำสั่งไปเซิร์ฟเวอร์ (ทีละรายการ)...', 'success');
+        let ok = 0;
+        let skip = 0;
+        try {
+          for (const { id, row } of pairs) {
+            const uid = String(row.dataset.assignUserId || '').trim();
+            const jids = String(row.dataset.assignJobIds || '').trim();
+            if (!uid) {
+              showAssignmentPostStatus(row, 'ยังไม่ได้ผูก User — แก้ไขก่อน', 'error');
+              skip += 1;
+              continue;
+            }
+            if (!jids) {
+              showAssignmentPostStatus(row, 'ยังไม่มีงาน (Jobs) — แก้ไขก่อน', 'error');
+              skip += 1;
+              continue;
+            }
+            try {
+              const out = await runPost([id]);
+              if (out?.queued) {
+                showAssignmentPostStatus(
+                  row,
+                  'เข้าคิวแล้ว — Chrome เปิดบนเครื่องที่รัน worker เท่านั้น (แต่ละแถวคิวแยก)',
+                  'queued'
+                );
+              } else {
+                showAssignmentPostStatus(row, 'สั่งโพสต์ทันที (โหมดเซิร์ฟเวอร์ท้องถิ่น)', 'started');
+              }
+              ok += 1;
+            } catch (e) {
+              showAssignmentPostStatus(row, `ไม่สำเร็จ: ${e.message}`, 'error');
+              skip += 1;
+            }
+          }
+          showAppToast(
+            `โพสต์ที่เลือก: ส่งแล้ว ${ok} รายการ${skip ? `, ข้าม/ผิดพลาด ${skip}` : ''} (แต่ละรายการเป็นคิวแยก — ตั้ง WORKER_CONCURRENCY ให้พอกับจำนวนบัญชี)`,
+            ok > 0 ? 'success' : 'error'
+          );
+        } finally {
+          bulkPostBtn.disabled = false;
+          refreshBulkButtons();
+        }
+      };
+    }
     container.addEventListener('change', (e) => {
       if (e.target && e.target.classList?.contains('row-select')) {
         refreshBulkButtons();
@@ -1059,7 +1126,7 @@ const TAB_CONFIG = {
       { key: 'group_ids', label: 'Groups (multi-select)', type: 'multiselectFrom', optionsFrom: 'groups', optionLabel: 'name', optionValue: 'id', required: false },
     ],
     listFields: ['id', 'user_id', 'doer_name', 'department', 'job_ids', 'group_ids'],
-    note: 'If group is empty in assignment, system uses groups from user config',
+    note: 'ถ้าไม่เลือก Groups ใน Assignment ระบบใช้กลุ่มจาก User — เลือกหลายรายการแล้วกด "โพสต์ที่เลือก" จะเข้าคิวแยกต่อแถว (หลายบัญชีพร้อมกันได้ถ้า WORKER_CONCURRENCY พอ)',
   },
   lead_collect: {
     title: 'Collect Comments from Posts',
@@ -4066,15 +4133,36 @@ async function loadList() {
           postBtn.onclick = async () => {
             const origText = postBtn.textContent;
             try {
+              const hasJobs =
+                (Array.isArray(item.job_ids) && item.job_ids.length > 0) || !!item.job_id;
+              if (!item.user_id) {
+                showAssignmentPostStatus(row, 'ยังไม่ได้ผูก User — แก้ไข Assignment ก่อน', 'error');
+                showAppToast('Assignment ต้องมี User', 'error');
+                return;
+              }
+              if (!hasJobs) {
+                showAssignmentPostStatus(row, 'ยังไม่มีงาน (Jobs) — เลือกงานใน Assignment ก่อน', 'error');
+                showAppToast('Assignment ต้องมีอย่างน้อย 1 งาน', 'error');
+                return;
+              }
+              showAppToast('กำลังส่งคำสั่งไปเซิร์ฟเวอร์...', 'success');
               postBtn.disabled = true;
               postBtn.textContent = 'กำลังเริ่ม...';
               const out = await runPost([item.id]);
               if (out?.queued) {
-                showAppToast('เข้าคิวโพสต์แล้ว (บัญชีเดียวกัน)', 'success');
+                showAssignmentPostStatus(
+                  row,
+                  'เข้าคิวแล้ว — Google Chrome จะเปิดบนเครื่องที่รัน npm run worker:post เท่านั้น (ไม่ใช่ในแท็บเบราว์เซอร์นี้) ถ้าไม่มี Chrome ให้เปิด worker และเช็ก POST_WORKER_TOKEN / WORKER_API_BASE',
+                  'queued'
+                );
+                showAppToast(
+                  'เข้าคิวแล้ว — Chrome เปิดที่เครื่อง Worker ไม่ใช่ในเว็บนี้',
+                  'success'
+                );
               } else {
                 showAssignmentPostStatus(
                   row,
-                  'เริ่มโพสต์ทันที: ระบบกำลังเปิด Google Chrome สำหรับ Assignment นี้',
+                  'เริ่มโพสต์ทันที: ระบบกำลังเปิด Google Chrome สำหรับ Assignment นี้บนเครื่องเซิร์ฟเวอร์/โปรเซสที่รัน Post',
                   'started'
                 );
                 showAppToast('เริ่มโพสต์ทันทีแล้ว', 'success');
@@ -4511,15 +4599,39 @@ function deleteItem(id, item) {
 }
 
 // --- Run Post ---
+const RUN_POST_FETCH_MS = Math.min(120000, Math.max(15000, Number(window.RUN_POST_FETCH_MS) || 45000));
+
 async function runPost(assignmentIds = []) {
   const body = Array.isArray(assignmentIds) && assignmentIds.length > 0
     ? { assignment_ids: assignmentIds }
     : {};
-  const res = await fetch('/api/run/post', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), RUN_POST_FETCH_MS);
+  let res;
+  try {
+    res = await fetch('/api/run/post', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } catch (e) {
+    const name = e && e.name;
+    if (name === 'AbortError') {
+      throw new Error(
+        `หมดเวลารอเซิร์ฟเวอร์ (${Math.round(RUN_POST_FETCH_MS / 1000)} วินาที) — ลองใหม่ หรือเช็กเน็ต / สถานะ Vercel`
+      );
+    }
+    const msg = e && e.message ? String(e.message) : String(e);
+    if (/failed to fetch|networkerror|load failed/i.test(msg)) {
+      throw new Error(
+        'เชื่อมต่อ API ไม่ได้ — เช็กอินเทอร์เน็ต หรือว่าเปิดเว็บจากโดเมนที่ถูกต้อง (เช่น soworkautopost.vercel.app)'
+      );
+    }
+    throw e;
+  } finally {
+    clearTimeout(to);
+  }
   const contentType = res.headers.get('content-type') || '';
   let data;
   if (contentType.includes('application/json')) {
@@ -4542,6 +4654,7 @@ document.getElementById('btn-run-post').addEventListener('click', async () => {
   const btn = document.getElementById('btn-run-post');
   const origText = btn.textContent;
   try {
+    showAppToast('กำลังส่งคำสั่งไปเซิร์ฟเวอร์...', 'success');
     btn.disabled = true;
     btn.textContent = 'กำลังเริ่ม...';
     const out = await runPost();

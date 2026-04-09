@@ -64,6 +64,8 @@ test('Dynamic Post: รันโพสต์ตาม Assignments', async ({ pag
   }
 
   let currentUserId: string | null = null;
+  /** มีอย่างน้อย 1 assignment ที่ผ่านด่าน user/job/groups/credentials — กันจบเทสต์แบบ exit 0 ทั้งที่ไม่ได้โพสต์ */
+  let anyAssignmentReadyToPost = false;
 
   for (const assignment of assignments) {
     const user = config.users.find((u) => u.id === assignment.user_id);
@@ -90,6 +92,8 @@ test('Dynamic Post: รันโพสต์ตาม Assignments', async ({ pag
       console.log(`⏭️ ข้าม assignment ${assignment.id}: ไม่พบ Groups ที่ใช้โพสต์ (เช็กหน้า Assignment หรือ Users)`);
       continue;
     }
+
+    anyAssignmentReadyToPost = true;
 
     if (currentUserId !== user.id) {
       activePage = await facebookLogin(activePage, user.email, user.password, {
@@ -175,6 +179,12 @@ test('Dynamic Post: รันโพสต์ตาม Assignments', async ({ pag
         await activePage.waitForTimeout(3000);
       }
     }
+  }
+
+  if (!anyAssignmentReadyToPost) {
+    throw new Error(
+      'ไม่มี Assignment ที่โพสต์ได้ — ทุกรายการถูกข้าม ตรวจสอบ: ① User ของ assignment ตรงกับตาราง users ② job_ids / job_id ③ กลุ่ม (เลือกใน Assignment หรือกลุ่มใน User) ต้องมี fb_group_id ④ บนเครื่อง worker ต้องมี USER_{env_key}_EMAIL และ USER_{env_key}_PASSWORD'
+    );
   }
 
   console.log('✅ โพสต์ครบตาม Assignments แล้ว');

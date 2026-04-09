@@ -18,6 +18,7 @@
     "import:krungsri": "node scripts/import-driver-pack.js krungsri-driver-bank-pack.json",
     "import:tum": "node scripts/import-driver-pack.js tum-driver-pack.json",
     "worker:post": "node scripts/post-remote-worker.js",
+    "worker:watch": "node scripts/worker-queue-watch.js",
     "test": "playwright test --headed --project=\"Google Chrome\"",
     "test:logic": "playwright test tests/collectPostComments.logic.spec.ts --project=ChromiumCollect",
     "test:postAll": "playwright test postAll --headed --project=Google Chrome",
