@@ -8,7 +8,6 @@ import {
   facebookLogin,
   buildExcludedPhoneSet,
   filterPhonesForCollect,
-  keepLatestPhonePerSelection,
   normalizeThaiPhoneDigits,
   runLog,
   scrapeCommentsAndPhones,
@@ -100,7 +99,7 @@ test('collectComments', async ({ page }) => {
     string,
     { commentCount: number; phones: string[]; item: CollectPlan['posts'][number] }
   >();
-  const phoneHits: Array<{ postLogId: string; jobId: string; createdAtMs: number; phone: string }> = [];
+  const CUSTOMER_PHONE_MAX_LEN = Math.min(2000, Math.max(100, Number(process.env.COLLECT_CUSTOMER_PHONE_MAX_LEN) || 2000));
 
   let idx = 0;
   for (const item of plan.posts) {
@@ -131,15 +130,6 @@ test('collectComments', async ({ page }) => {
       // ด่านแรก: ตัดเบอร์ต้องห้าม (เจ้าของงาน/โพสต์/caption)
       const kept = filterPhonesForCollect(phones, { excluded: excludedForThisPost, seenToday: new Set<string>() });
       pendingByPost.set(item.post_log_id, { commentCount, phones: kept, item });
-      const createdAtMs = item.created_at ? new Date(item.created_at).getTime() : Date.now();
-      for (const p of kept) {
-        phoneHits.push({
-          postLogId: item.post_log_id,
-          jobId: String(item.job_id || '').trim(),
-          createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : Date.now(),
-          phone: p,
-        });
-      }
       await runLog({
         level: 'success',
         message: `[${idx}/${plan.posts.length}] สแกนเสร็จ — Comment ${commentCount}, พบเบอร์ผู้สนใจ ${kept.length} รายการ`,
@@ -158,11 +148,10 @@ test('collectComments', async ({ page }) => {
     await active.waitForTimeout(800);
   }
 
-  const owned = keepLatestPhonePerSelection(phoneHits);
   for (const item of plan.posts) {
     const st = pendingByPost.get(item.post_log_id) || { commentCount: 0, phones: [], item };
-    const phonesFinal = owned.get(item.post_log_id) || [];
-    const phoneStr = phonesFinal.length ? phonesFinal.join(', ').slice(0, 95) : '';
+    const phonesFinal = st.phones || [];
+    const phoneStr = phonesFinal.length ? phonesFinal.join(', ').slice(0, CUSTOMER_PHONE_MAX_LEN) : '';
     await patchCollectResult(item.post_log_id, {
       comment_count: st.commentCount,
       customer_phone: phoneStr,
@@ -170,7 +159,7 @@ test('collectComments', async ({ page }) => {
   }
   await runLog({
     level: 'info',
-    message: 'จบรอบเก็บ Comment ทั้งหมด (ตัดซ้ำให้เหลือเฉพาะเบอร์ล่าสุดในชุดที่เลือกแล้ว)',
+    message: 'จบรอบเก็บ Comment ทั้งหมด (เบอร์ต่อโพสต์ — ตัดเฉพาะเบอร์ใน caption/โพสต์และซ้ำในคอมเมนต์เดียวกัน)',
     user_id: user.id,
   });
 });

@@ -102,6 +102,29 @@ export function keepLatestPhonePerSelection(hits: PhoneHit[]): Map<string, strin
   return out;
 }
 
+/** คลิก See more / ดูเพิ่มเติม ในโพสต์และในคอมเมนต์ — กันตัด caption/คอมเมนต์ทิ้ง */
+async function expandTruncatedFacebookContent(page: Page) {
+  const nameRe = /See more|See More|ดูเพิ่มเติม|แสดงเพิ่มเติม|แสดงต่อ|Read more|View more text/i;
+  for (let i = 0; i < 10; i++) {
+    const btn = page.getByRole('button', { name: nameRe }).first();
+    if (await btn.isVisible({ timeout: 450 }).catch(() => false)) {
+      await btn.click({ timeout: 2500 }).catch(() => {});
+      await page.waitForTimeout(450);
+    } else {
+      break;
+    }
+  }
+}
+
+function normalizedPhoneSetFromText(text: string): Set<string> {
+  const s = new Set<string>();
+  for (const p of extractPhonesFromText(text)) {
+    const n = normalizeThaiPhoneDigits(p);
+    if (n) s.add(n);
+  }
+  return s;
+}
+
 /**
  * เปิดลิงก์โพสต์ ขยาย/เลื่อน comment แล้วรวมข้อความจาก article
  */
@@ -112,13 +135,11 @@ export async function scrapeCommentsAndPhones(
 ): Promise<{ phones: string[]; commentCount: number; postBodyPhones: string[] }> {
   await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 120_000 });
   await page.waitForTimeout(2000);
-  await page
-    .locator('[role="article"]')
-    .first()
-    .waitFor({ state: 'visible', timeout: 45_000 })
-    .catch(() => {});
+  const firstArticle = page.locator('[role="article"]').first();
+  await firstArticle.waitFor({ state: 'visible', timeout: 45_000 }).catch(() => {});
+  await expandTruncatedFacebookContent(page);
 
-  for (let round = 0; round < 14; round++) {
+  for (let round = 0; round < 20; round++) {
     const moreRe = new RegExp(
       [
         'View more comments',
@@ -151,26 +172,32 @@ export async function scrapeCommentsAndPhones(
         break;
       }
     }
-    await page.mouse.wheel(0, 800);
-    await page.waitForTimeout(350);
-    if (!clicked && round > 5) break;
+    await page.mouse.wheel(0, 900);
+    await page.waitForTimeout(400);
+    if (!clicked && round > 8) break;
   }
 
   const articles = page.locator('[role="article"]');
   const n = await articles.count();
-  const maxN = Math.min(Math.max(n, 0), 140);
-  // article แรกมักเป็นโพสต์หลัก
+  const maxN = Math.min(Math.max(n, 0), 200);
   const postBodyText = maxN > 0 ? await articles.nth(0).innerText().catch(() => '') : '';
   const excludedNames = new Set(
     (Array.isArray(opts?.excludeAuthorNames) ? opts.excludeAuthorNames : [])
       .map((x) => String(x || '').trim().toLowerCase())
       .filter(Boolean)
   );
-  const commentTexts = await page
+
+  type EvalOut = { commentBlocks: string[]; captionExclusionText: string };
+  const evaluated = await page
     .evaluate((names) => {
       const excluded = new Set((Array.isArray(names) ? names : []).map((x) => String(x || '').trim().toLowerCase()));
       const out: string[] = [];
       const seen = new Set<string>();
+
+      const insideCommentThread = (el: Element | null) =>
+        !!el?.closest(
+          '[aria-label*="Comment by" i], [aria-label*="ความคิดเห็นโดย" i], [aria-label*="ความคิดเห็นของ" i], [aria-label*="Commenter" i]'
+        );
 
       const pushBlock = (raw: string) => {
         const text = String(raw || '').trim();
@@ -183,7 +210,15 @@ export async function scrapeCommentsAndPhones(
         out.push(text);
       };
 
-      // ลำดับแรก: aria ที่ Facebook มักใช้กับบล็อกคอมเมนต์ (ไม่ใช้ data-ad-preview — มักชนโฆษณา/ข้อความโพสต์)
+      const rootArticle = document.querySelector('[role="article"]');
+      let captionExclusionText = '';
+      if (rootArticle) {
+        const storyMsgs = Array.from(rootArticle.querySelectorAll('[data-ad-preview="message"]')).filter(
+          (el) => !insideCommentThread(el)
+        );
+        captionExclusionText = storyMsgs.map((el) => (el as HTMLElement).innerText).join('\n');
+      }
+
       const primarySelectors = [
         '[aria-label*="Comment by" i]',
         '[aria-label*="ความคิดเห็นโดย" i]',
@@ -193,36 +228,54 @@ export async function scrapeCommentsAndPhones(
       ];
       for (const sel of primarySelectors) {
         try {
-          document.querySelectorAll(sel).forEach((el) => pushBlock((el as HTMLElement).innerText));
+          document.querySelectorAll(sel).forEach((el) => {
+            pushBlock((el as HTMLElement).innerText);
+          });
         } catch {
-          /* ignore invalid selector in old engines */
+          /* ignore */
         }
       }
 
-      // รองรับ UI ที่ไม่มี aria ชัด — ใช้ article ถัดจากโพสต์หลัก
       if (out.length === 0) {
-        const articles = Array.from(document.querySelectorAll('[role="article"]'));
-        for (let i = 1; i < articles.length; i++) {
-          pushBlock((articles[i] as HTMLElement).innerText);
+        const arts = Array.from(document.querySelectorAll('[role="article"]'));
+        for (let i = 1; i < arts.length; i++) {
+          pushBlock((arts[i] as HTMLElement).innerText);
         }
       }
-      return out;
+
+      return { commentBlocks: out, captionExclusionText };
     }, [...excludedNames])
-    .catch(() => []);
-  let commentBlob = '';
-  if (Array.isArray(commentTexts) && commentTexts.length > 0) {
-    commentBlob = commentTexts.join('\n');
-  } else {
-    // fallback เดิม ถ้าจับคอมเมนต์บล็อกไม่ได้
+    .catch((): EvalOut => ({ commentBlocks: [], captionExclusionText: '' }));
+
+  const commentBlocks = Array.isArray(evaluated?.commentBlocks) ? evaluated.commentBlocks : [];
+  let commentBlob = commentBlocks.length > 0 ? commentBlocks.join('\n') : '';
+  if (!commentBlob) {
     for (let i = 1; i < maxN; i++) {
       commentBlob += '\n' + (await articles.nth(i).innerText().catch(() => ''));
     }
   }
-  // เก็บเบอร์จากคอมเมนต์เท่านั้น
-  const phones = extractPhonesFromText(commentBlob);
-  // กันพลาด: เก็บเบอร์ที่พบในโพสต์หลักไว้ให้ caller เอาไป exclude เพิ่ม
+
   const postBodyPhones = extractPhonesFromText(postBodyText);
-  // นับจากบล็อกคอมเมนต์จริงก่อน fallback
-  const commentCount = Array.isArray(commentTexts) && commentTexts.length > 0 ? commentTexts.length : Math.max(0, n - 1);
+  const captionExclusionPhones = normalizedPhoneSetFromText(String(evaluated?.captionExclusionText || ''));
+  const postBodyPhoneSet = normalizedPhoneSetFromText(postBodyText);
+  for (const p of postBodyPhones) {
+    const n0 = normalizeThaiPhoneDigits(p);
+    if (n0) postBodyPhoneSet.add(n0);
+  }
+  const excludeFromComments = new Set<string>([...captionExclusionPhones, ...postBodyPhoneSet]);
+
+  const phonesRaw = extractPhonesFromText(commentBlob);
+  const phonesDedup: string[] = [];
+  const seenNorm = new Set<string>();
+  for (const p of phonesRaw) {
+    const norm = normalizeThaiPhoneDigits(p);
+    if (!norm || excludeFromComments.has(norm) || seenNorm.has(norm)) continue;
+    seenNorm.add(norm);
+    phonesDedup.push(norm);
+  }
+  const phones = phonesDedup;
+
+  const commentCount =
+    commentBlocks.length > 0 ? commentBlocks.length : Math.max(0, n - 1);
   return { phones, commentCount, postBodyPhones };
 }

@@ -1223,10 +1223,12 @@ async function getPostLogsByIdsForUser(ids, userId) {
 }
 
 async function updatePostLogCollectResult(id, commentCount, customerPhone) {
+  const phoneStr =
+    customerPhone != null && String(customerPhone).trim() ? String(customerPhone).trim().slice(0, 2000) : null;
   await query(`UPDATE post_logs SET comment_count = $2, customer_phone = $3 WHERE id = $1`, [
     String(id),
     commentCount == null ? 0 : Math.max(0, parseInt(String(commentCount), 10) || 0),
-    customerPhone != null && String(customerPhone).trim() ? String(customerPhone).trim().slice(0, 100) : null,
+    phoneStr,
   ]);
 }
 
@@ -1727,6 +1729,13 @@ async function ensureUsersContactPhoneColumn() {
   await query(`ALTER TABLE ${schemaName}.users ADD COLUMN IF NOT EXISTS contact_phone VARCHAR(64)`).catch(() => {});
 }
 
+/** เก็บหลายเบอร์ใน customer_phone — ขยายจาก VARCHAR(100) */
+async function ensurePostLogsCustomerPhoneWide() {
+  const SCHEMA = process.env.DB_SCHEMA || 'so_autopost_jobs';
+  const schemaName = SCHEMA.includes('-') ? `"${SCHEMA}"` : SCHEMA;
+  await query(`ALTER TABLE ${schemaName}.post_logs ALTER COLUMN customer_phone TYPE VARCHAR(2000)`).catch(() => {});
+}
+
 async function initSchema() {
   const fs = require('fs');
   const path = require('path');
@@ -1739,6 +1748,7 @@ async function initSchema() {
   }
   await ensurePostLogsGroupNameText();
   await ensureUsersContactPhoneColumn();
+  await ensurePostLogsCustomerPhoneWide().catch(() => {});
   await ensureAssignmentsJobIdsColumn().catch(() => {});
   await ensurePostRunQueueTable().catch(() => {});
 }

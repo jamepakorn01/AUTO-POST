@@ -143,7 +143,7 @@ CREATE TABLE IF NOT EXISTS post_logs (
   post_link TEXT,
   post_status VARCHAR(50),
   comment_count INT DEFAULT 0,
-  customer_phone VARCHAR(100),
+  customer_phone VARCHAR(2000),
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
