@@ -42,8 +42,10 @@ export default defineConfig({
   },
   {
     name: 'ChromiumCollect',
+    /** ใช้ Chrome จริงแบบ headless — ลดปัญหา session / ตรวจจับบอทเมื่อเทียบกับ Chromium ที่ bundle มา */
     use: {
       ...devices['Desktop Chrome'],
+      channel: 'chrome',
       headless: true,
     },
   },

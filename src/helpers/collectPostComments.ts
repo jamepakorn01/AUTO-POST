@@ -112,14 +112,33 @@ export async function scrapeCommentsAndPhones(
 ): Promise<{ phones: string[]; commentCount: number; postBodyPhones: string[] }> {
   await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 120_000 });
   await page.waitForTimeout(2000);
+  await page
+    .locator('[role="article"]')
+    .first()
+    .waitFor({ state: 'visible', timeout: 45_000 })
+    .catch(() => {});
 
   for (let round = 0; round < 14; round++) {
     const moreRe = new RegExp(
-      'View more comments|more comments|See more comments|ความคิดเห็นเพิ่ม|แสดงความคิดเห็น|ดูความคิดเห็น',
+      [
+        'View more comments',
+        'more comments',
+        'See more comments',
+        'Previous comments',
+        'View previous comments',
+        'ความคิดเห็นเพิ่ม',
+        'ความคิดเห็นเพิ่มเติม',
+        'แสดงความคิดเห็น',
+        'ดูความคิดเห็น',
+        'ความคิดเห็นก่อนหน้า',
+        'ดูเพิ่มเติม',
+        'See more',
+      ].join('|'),
       'i'
     );
     const moreSelectors = [
-      page.getByRole('button', { name: /View more comments|more comments/i }),
+      page.getByRole('button', { name: /View more comments|more comments|See more|Previous comments/i }),
+      page.getByRole('link', { name: moreRe }),
       page.getByText(moreRe).first(),
     ];
     let clicked = false;
@@ -151,18 +170,41 @@ export async function scrapeCommentsAndPhones(
     .evaluate((names) => {
       const excluded = new Set((Array.isArray(names) ? names : []).map((x) => String(x || '').trim().toLowerCase()));
       const out: string[] = [];
-      // พยายามจับ "บล็อกคอมเมนต์จริง" ก่อน
-      const commentBlocks = Array.from(
-        document.querySelectorAll(
-          '[aria-label*="Comment by"], [aria-label*="ความคิดเห็นโดย"], [aria-label*="Commenter"], [data-ad-preview="message"]'
-        )
-      );
-      for (const el of commentBlocks) {
-        const text = String((el as HTMLElement).innerText || '').trim();
-        if (!text) continue;
+      const seen = new Set<string>();
+
+      const pushBlock = (raw: string) => {
+        const text = String(raw || '').trim();
+        if (text.length < 2) return;
         const first = text.split('\n').map((s) => s.trim()).find(Boolean) || '';
-        if (first && excluded.has(first.toLowerCase())) continue;
+        if (first && excluded.has(first.toLowerCase())) return;
+        const key = text.slice(0, 240);
+        if (seen.has(key)) return;
+        seen.add(key);
         out.push(text);
+      };
+
+      // ลำดับแรก: aria ที่ Facebook มักใช้กับบล็อกคอมเมนต์ (ไม่ใช้ data-ad-preview — มักชนโฆษณา/ข้อความโพสต์)
+      const primarySelectors = [
+        '[aria-label*="Comment by" i]',
+        '[aria-label*="ความคิดเห็นโดย" i]',
+        '[aria-label*="ความคิดเห็นของ" i]',
+        '[aria-label*="Commenter" i]',
+        '[aria-label*="comment by" i]',
+      ];
+      for (const sel of primarySelectors) {
+        try {
+          document.querySelectorAll(sel).forEach((el) => pushBlock((el as HTMLElement).innerText));
+        } catch {
+          /* ignore invalid selector in old engines */
+        }
+      }
+
+      // รองรับ UI ที่ไม่มี aria ชัด — ใช้ article ถัดจากโพสต์หลัก
+      if (out.length === 0) {
+        const articles = Array.from(document.querySelectorAll('[role="article"]'));
+        for (let i = 1; i < articles.length; i++) {
+          pushBlock((articles[i] as HTMLElement).innerText);
+        }
       }
       return out;
     }, [...excludedNames])
