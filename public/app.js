@@ -3,6 +3,37 @@
  */
 const API = '/api';
 
+/** Admin บน Vercel — โพสต์จะเข้าคิวใน DB; Chrome/Playwright รันบนเครื่อง Worker เท่านั้น */
+function isVercelHostedAdmin() {
+  return typeof location !== 'undefined' && /\.vercel\.app$/i.test(String(location.hostname || ''));
+}
+
+/** กล่องแจ้งเตือนเดียวกันสำหรับแท็บ Assignments / Dashboard */
+function vercelPostWorkerBannerHtml() {
+  return `<div class="rounded-lg border border-amber-200 bg-amber-50/95 text-amber-950 text-xs p-3 mb-4 leading-relaxed" role="status">
+        <p class="font-semibold mb-1">โพสต์จากหน้านี้ (โฮสต์ Vercel) จะไม่เปิด Google Chrome บนเครื่องคุณ</p>
+        <p class="text-amber-900/90">เซิร์ฟเวอร์คลาวด์บันทึกเฉพาะ<strong>คิวใน database</strong> — <strong>Chrome จะเปิดบนเครื่องที่รัน</strong>
+        <code class="bg-amber-100 px-1 rounded">npm run worker:post</code> พร้อม
+        <code class="bg-amber-100 px-1 rounded">WORKER_API_BASE</code> ชี้โดเมนนี้ และ
+        <code class="bg-amber-100 px-1 rounded">POST_WORKER_TOKEN</code> ตรงกับที่ตั้งใน Vercel</p>
+        <p class="mt-2 text-amber-800/90">ถ้าต้องการให้ Chrome เด้งบนเครื่องที่ใช้เบราว์เซอร์นี้ทันที ให้รัน <code class="bg-amber-100 px-1 rounded">npm start</code>
+        แล้วเปิด Admin ที่ <code class="bg-amber-100 px-1 rounded">http://localhost:3000</code> (หรือพอร์ตที่ Terminal แสดง)</p>
+      </div>`;
+}
+
+function mountVercelSidebarPostHint() {
+  if (!isVercelHostedAdmin()) return;
+  const footer = document.querySelector('.sidebar-footer');
+  if (!footer || footer.querySelector('[data-vercel-worker-hint]')) return;
+  const hint = document.createElement('p');
+  hint.dataset.vercelWorkerHint = '1';
+  hint.className =
+    'text-[10px] leading-snug text-amber-900/90 mb-2 px-0.5 border border-amber-200/80 bg-amber-50/90 rounded-md p-2';
+  hint.innerHTML =
+    'บน Vercel: ปุ่ม «เริ่มโพสต์» = <strong>เข้าคิว</strong> — Chrome เปิดที่เครื่องรัน <code class="text-[9px] bg-amber-100 px-0.5 rounded">npm run worker:post</code> เท่านั้น';
+  footer.insertBefore(hint, footer.firstElementChild);
+}
+
 /** POST เช็ค Facebook session — ลอง path สั้นก่อน แล้วค่อยสำรอง (กันพลาดเซิร์ฟเวอร์เก่า / cache) */
 async function postFacebookSessionCheck(userId) {
   const origin = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : '';
@@ -2894,7 +2925,9 @@ async function loadDashboardTab() {
     const activeStart = selectedStart || (summary?.filters?.start_date ? String(summary.filters.start_date).slice(0, 10) : '');
     const activeEnd = selectedEnd || (summary?.filters?.end_date ? String(summary.filters.end_date).slice(0, 10) : '');
     const activeOwner = selectedOwner || summary?.filters?.owner || '';
+    const vercelDashHint = isVercelHostedAdmin() ? vercelPostWorkerBannerHtml() : '';
     container.innerHTML = `
+      ${vercelDashHint}
       <div class="rounded-xl border border-slate-200 bg-white p-4 mb-4">
         <div class="grid grid-cols-1 sm:grid-cols-4 gap-2 items-end">
           <div>
@@ -3994,6 +4027,12 @@ async function loadList() {
           items,
           currentTab === 'assignments' ? { userMap, jobMap, jobOwnerById } : {}
         );
+        if (currentTab === 'assignments' && isVercelHostedAdmin()) {
+          const wrap = document.createElement('div');
+          wrap.className = 'px-3 sm:px-4';
+          wrap.innerHTML = vercelPostWorkerBannerHtml();
+          container.appendChild(wrap);
+        }
         container.insertAdjacentHTML('beforeend', listEmptyHtml());
         listToolsEmpty?.applyBulkMode?.(BULK_MODE[currentTab]);
       } else {
@@ -4517,6 +4556,12 @@ async function loadList() {
       return;
     }
     if (currentTab === 'assignments') {
+      if (isVercelHostedAdmin()) {
+        const wrap = document.createElement('div');
+        wrap.className = 'px-3 sm:px-4';
+        wrap.innerHTML = vercelPostWorkerBannerHtml();
+        container.appendChild(wrap);
+      }
       container.appendChild(assignRowsWrapEl);
       listAppendTarget = assignRowsWrapEl;
       renderAssignmentsPage();
@@ -5036,5 +5081,6 @@ function renderPostStatusCards(status) {
 setInterval(refreshRunStatusBanner, 4000);
 refreshRunStatusBanner();
 
+mountVercelSidebarPostHint();
 setActiveTab('users');
 
