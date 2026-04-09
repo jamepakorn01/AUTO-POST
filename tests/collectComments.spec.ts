@@ -10,6 +10,7 @@ import {
   filterPhonesForCollect,
   normalizeThaiPhoneDigits,
   runLog,
+  safePageWait,
   scrapeCommentsAndPhones,
 } from '../src/helpers';
 
@@ -20,6 +21,9 @@ type CollectPlan = {
     post_link: string;
     job_id?: string;
     job_title?: string;
+    owner?: string;
+    company?: string;
+    poster_name?: string;
     group_name?: string;
     posted_date_bangkok?: string;
     created_at?: string;
@@ -119,13 +123,19 @@ test('collectComments', async ({ page }) => {
           sessionKey: String(user.env_key || user.id || user.email || 'default'),
         });
       }
+      const ownerNames = [user.poster_name || '', user.name || '', item.owner || '', item.company || '', item.poster_name || '']
+        .map((x) => String(x || '').trim())
+        .filter(Boolean);
       const { phones, commentCount, postBodyPhones } = await scrapeCommentsAndPhones(active, item.post_link, {
-        excludeAuthorNames: [user.poster_name || '', user.name || ''],
+        excludeAuthorNames: ownerNames,
       });
       const excludedForThisPost = new Set(excludedPhones);
       postBodyPhones
         .map((x) => normalizeThaiPhoneDigits(x))
         .filter((x): x is string => !!x)
+        .forEach((x) => excludedForThisPost.add(x));
+      // ตัดเบอร์จาก metadata งาน (owner/company/job title) กันเบอร์เจ้าของงานหลุดจากข้อความคอมเมนต์
+      buildExcludedPhoneSet([item.owner, item.company, item.job_title].filter(Boolean).join(' '))
         .forEach((x) => excludedForThisPost.add(x));
       // ด่านแรก: ตัดเบอร์ต้องห้าม (เจ้าของงาน/โพสต์/caption)
       const kept = filterPhonesForCollect(phones, { excluded: excludedForThisPost, seenToday: new Set<string>() });
@@ -145,7 +155,30 @@ test('collectComments', async ({ page }) => {
         meta: { post_log_id: item.post_log_id },
       });
     }
-    await active.waitForTimeout(800);
+    /** ถ้าแท็บถูกปิดระหว่างสแกน อย่าเรียก waitForTimeout — เดิมจะ throw แล้วหยุดทั้งคิว */
+    if (active.isClosed()) {
+      try {
+        const ctx = page.context();
+        active = await ctx.newPage();
+        active = await facebookLogin(active, user.email, user.password, {
+          userLabel: user.name || user.id,
+          sessionKey: String(user.env_key || user.id || user.email || 'default'),
+        });
+        await runLog({
+          level: 'warn',
+          message: `[${idx}/${plan.posts.length}] แท็บปิดกลางทาง — เปิดแท็บใหม่และล็อกอินแล้ว (ทำโพสต์ถัดไปต่อ)`,
+          user_id: user.id,
+        });
+      } catch (reopenErr) {
+        await runLog({
+          level: 'error',
+          message: `Browser/context ใช้งานไม่ได้หลังแท็บปิด: ${String((reopenErr as Error).message).slice(0, 180)}`,
+          user_id: user.id,
+        });
+        throw reopenErr;
+      }
+    }
+    await safePageWait(active, 800);
   }
 
   for (const item of plan.posts) {

@@ -13,5 +13,6 @@ export {
   buildExcludedPhoneSet,
   filterPhonesForCollect,
   keepLatestPhonePerSelection,
+  safePageWait,
   scrapeCommentsAndPhones,
 } from './collectPostComments';

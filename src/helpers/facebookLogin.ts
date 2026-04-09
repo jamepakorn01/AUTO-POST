@@ -8,6 +8,16 @@ const FB_STATE_LOCK_POLL_MS = 500;
 /** ล็อกข้ามโปรเซส — กันหลาย Playwright แย่งอ่าน/เขียน facebook-*.json พร้อมกัน */
 async function acquireFacebookStateLock(statePath: string): Promise<() => Promise<void>> {
   const lockPath = `${statePath}.lock`;
+  /** ล็อกค้างเมื่อ worker/Chrome เด้ง — กันค้างที่หน้าโหลดนานเกิน 15 นาที */
+  try {
+    const st = await fs.promises.stat(lockPath).catch(() => null);
+    if (st && Date.now() - st.mtimeMs > 15 * 60 * 1000) {
+      await fs.promises.unlink(lockPath).catch(() => {});
+      console.warn(`[fb-session] ลบไฟล์ล็อกค้าง: ${path.basename(lockPath)} (เกิน 15 นาที)`);
+    }
+  } catch {
+    /* ignore */
+  }
   const start = Date.now();
   for (;;) {
     try {
@@ -56,14 +66,16 @@ export async function facebookLogin(
     workingPage = await workingPage.context().newPage();
   }
 
-  await restoreFacebookCookies(workingPage, statePath);
+  console.log(
+    `[fb-session] ${path.basename(statePath)} ${fs.existsSync(statePath) ? '→ โหลด cookies/localStorage' : '→ ยังไม่มีไฟล์ จะล็อกอินด้วยรหัส'}`
+  );
+  await restoreFacebookStorageState(workingPage, statePath);
   try {
-    // ห้ามใช้ networkidle — Facebook โหลดต่อเนื่อง มักไม่ idle ทำให้ค้างที่หน้าแรกหลัง login
-    await workingPage.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded' });
+    await workingPage.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 120_000 });
   } catch (e) {
     if (workingPage.isClosed()) {
       workingPage = await workingPage.context().newPage();
-      await workingPage.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded' });
+      await workingPage.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 120_000 });
     } else {
       throw e;
     }
@@ -190,18 +202,57 @@ async function dismissCommonFacebookPopups(page: Page): Promise<void> {
   }
 }
 
-async function restoreFacebookCookies(page: Page, statePath: string): Promise<void> {
+type PlaywrightStorageStateFile = {
+  cookies?: Array<Record<string, unknown>>;
+  origins?: Array<{ origin?: string; localStorage?: Array<{ name: string; value: string }> }>;
+};
+
+function isFacebookRelatedCookieDomain(domain: string): boolean {
+  const d = domain.toLowerCase();
+  return (
+    d.includes('facebook.com') ||
+    d.includes('fbcdn.net') ||
+    d.includes('fb.com') ||
+    d.includes('messenger.com')
+  );
+}
+
+function isFacebookRelatedOrigin(origin: string): boolean {
+  return /facebook\.com|messenger\.com|fb\.com/i.test(origin);
+}
+
+/**
+ * คืนค่า session จากไฟล์ที่บันทึกด้วย context.storageState()
+ * ต้องใส่ทั้ง cookies และ localStorage (เช่น key Session) — ถ้าใส่แค่ cookies มักโดนหน้า Login แม้ session ยังใช้ได้
+ */
+async function restoreFacebookStorageState(page: Page, statePath: string): Promise<void> {
   try {
     if (!fs.existsSync(statePath)) return;
     const raw = await fs.promises.readFile(statePath, 'utf-8');
-    const parsed = JSON.parse(raw) as { cookies?: Array<Record<string, unknown>> };
+    const parsed = JSON.parse(raw) as PlaywrightStorageStateFile;
     const cookies = Array.isArray(parsed.cookies) ? parsed.cookies : [];
-    const fbCookies = cookies.filter((c) => {
-      const domain = String(c.domain || '');
-      return domain.includes('facebook.com') || domain.includes('fbcdn.net');
-    }) as any[];
+    const fbCookies = cookies.filter((c) => isFacebookRelatedCookieDomain(String(c.domain || ''))) as any[];
     if (fbCookies.length > 0) {
       await page.context().addCookies(fbCookies);
+    }
+    const origins = Array.isArray(parsed.origins) ? parsed.origins : [];
+    for (const o of origins) {
+      const origin = String(o.origin || '').trim();
+      const items = Array.isArray(o.localStorage) ? o.localStorage : [];
+      if (!origin || items.length === 0 || !isFacebookRelatedOrigin(origin)) continue;
+      const url = origin.endsWith('/') ? origin : `${origin}/`;
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90_000 }).catch(() => {});
+      await page.evaluate((entries) => {
+        for (const it of entries) {
+          try {
+            localStorage.setItem(String(it.name), String(it.value));
+          } catch {
+            /* quota / sandbox */
+          }
+        }
+      }, items);
+      /** ไม่ใช้ reload — บางเครื่องค้าง; โหลด URL ใหม่ให้ FB อ่าน localStorage */
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 90_000 }).catch(() => {});
     }
   } catch {
     // ignore invalid state file
@@ -259,6 +310,11 @@ async function getAuthState(page: Page): Promise<AuthState> {
 }
 
 async function waitForAuthState(page: Page, timeoutMs: number): Promise<AuthState> {
+  /** เฉพาะหน้าโหลดภายใน (about:blank / data:) — อย่าตัดทุก URL ที่ไม่ใช่ facebook เดี๋ยว logic หลัง goto เพี้ยน */
+  const u = page.url();
+  if (u === 'about:blank' || u.startsWith('data:')) {
+    return 'unknown';
+  }
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const state = await getAuthState(page);

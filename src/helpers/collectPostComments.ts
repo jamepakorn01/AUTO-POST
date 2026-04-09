@@ -1,5 +1,15 @@
 import type { Page } from '@playwright/test';
 
+/** รอโดยไม่ throw เมื่อแท็บ/Browser ถูกปิดระหว่างเก็บ Comment (กันหยุดทั้งงาน 142 โพสต์) */
+export async function safePageWait(page: Page, ms: number): Promise<void> {
+  if (page.isClosed()) return;
+  try {
+    await page.waitForTimeout(ms);
+  } catch {
+    /* Target closed */
+  }
+}
+
 /** ดึงเบอร์ไทยจากข้อความ (รูปแบบหลากหลาย) */
 export function extractPhonesFromText(text: string): string[] {
   const raw = String(text || '');
@@ -106,10 +116,11 @@ export function keepLatestPhonePerSelection(hits: PhoneHit[]): Map<string, strin
 async function expandTruncatedFacebookContent(page: Page) {
   const nameRe = /See more|See More|ดูเพิ่มเติม|แสดงเพิ่มเติม|แสดงต่อ|Read more|View more text/i;
   for (let i = 0; i < 10; i++) {
+    if (page.isClosed()) return;
     const btn = page.getByRole('button', { name: nameRe }).first();
     if (await btn.isVisible({ timeout: 450 }).catch(() => false)) {
       await btn.click({ timeout: 2500 }).catch(() => {});
-      await page.waitForTimeout(450);
+      await safePageWait(page, 450);
     } else {
       break;
     }
@@ -133,13 +144,27 @@ export async function scrapeCommentsAndPhones(
   postUrl: string,
   opts?: { excludeAuthorNames?: string[] }
 ): Promise<{ phones: string[]; commentCount: number; postBodyPhones: string[] }> {
-  await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 120_000 });
-  await page.waitForTimeout(2000);
+  if (page.isClosed()) {
+    throw new Error('Target page, context or browser has been closed');
+  }
+  try {
+    await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 120_000 });
+  } catch (e) {
+    if (page.isClosed()) {
+      throw new Error('Target page, context or browser has been closed');
+    }
+    throw e;
+  }
+  if (page.isClosed()) {
+    throw new Error('Target page, context or browser has been closed');
+  }
+  await safePageWait(page, 2000);
   const firstArticle = page.locator('[role="article"]').first();
   await firstArticle.waitFor({ state: 'visible', timeout: 45_000 }).catch(() => {});
   await expandTruncatedFacebookContent(page);
 
   for (let round = 0; round < 20; round++) {
+    if (page.isClosed()) break;
     const moreRe = new RegExp(
       [
         'View more comments',
@@ -168,13 +193,18 @@ export async function scrapeCommentsAndPhones(
       if (await el.isVisible({ timeout: 600 }).catch(() => false)) {
         await el.click({ timeout: 2500 }).catch(() => {});
         clicked = true;
-        await page.waitForTimeout(1200);
+        await safePageWait(page, 1200);
         break;
       }
     }
-    await page.mouse.wheel(0, 900);
-    await page.waitForTimeout(400);
+    if (page.isClosed()) break;
+    await page.mouse.wheel(0, 900).catch(() => {});
+    await safePageWait(page, 400);
     if (!clicked && round > 8) break;
+  }
+
+  if (page.isClosed()) {
+    throw new Error('Target page, context or browser has been closed');
   }
 
   const articles = page.locator('[role="article"]');
@@ -213,10 +243,29 @@ export async function scrapeCommentsAndPhones(
       const rootArticle = document.querySelector('[role="article"]');
       let captionExclusionText = '';
       if (rootArticle) {
-        const storyMsgs = Array.from(rootArticle.querySelectorAll('[data-ad-preview="message"]')).filter(
+        const storyMsgs = Array.from(rootArticle.querySelectorAll('[data-ad-preview="message"], [data-testid="post_message"]')).filter(
           (el) => !insideCommentThread(el)
         );
         captionExclusionText = storyMsgs.map((el) => (el as HTMLElement).innerText).join('\n');
+        // เผื่อ selector เฉพาะไม่เจอ: ใช้สำเนา rootArticle แล้วตัดส่วนคอมเมนต์ออกก่อนอ่านข้อความ
+        if (!captionExclusionText.trim()) {
+          try {
+            const clone = rootArticle.cloneNode(true) as HTMLElement;
+            const dropSel = [
+              '[aria-label*="Comment by" i]',
+              '[aria-label*="ความคิดเห็นโดย" i]',
+              '[aria-label*="ความคิดเห็นของ" i]',
+              '[aria-label*="Commenter" i]',
+              '[role="article"] [role="article"]',
+              '[data-testid*="UFI2Comment" i]',
+              '[data-testid*="comment" i]',
+            ].join(',');
+            clone.querySelectorAll(dropSel).forEach((n) => n.remove());
+            captionExclusionText = (clone as HTMLElement).innerText || '';
+          } catch {
+            /* ignore */
+          }
+        }
       }
 
       const primarySelectors = [

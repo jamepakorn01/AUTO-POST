@@ -21,17 +21,35 @@ function getJobIds(a: { job_ids?: string[]; job_id?: string }): string[] {
   return [];
 }
 
+const LOADING_HTML_DB = `<!DOCTYPE html><html lang="th"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width"/><title>AUTO-POST</title><style>body{font-family:system-ui,sans-serif;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0f172a;color:#e2e8f0}p{margin:12px 20px;text-align:center;max-width:28rem;line-height:1.5}</style></head><body><div><p><strong>AUTO-POST</strong></p><p id="m">กำลังโหลดข้อมูลจากฐานข้อมูล…</p></div></body></html>`;
+
+const LOADING_HTML_READY = LOADING_HTML_DB.replace(
+  'กำลังโหลดข้อมูลจากฐานข้อมูล…',
+  'กำลังเตรียมโพสต์ตาม Assignments…'
+);
+
+/** ใช้ setContent แทน data: URL — บาง Chrome/Playwright นำทางจาก data: → https แล้วพฤติกรรมแปลก */
+async function showWorkerLoadingPage(pg: import('@playwright/test').Page, html: string) {
+  await pg.setContent(html, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+}
+
 test('Dynamic Post: รันโพสต์ตาม Assignments', async ({ page, request }) => {
   test.setTimeout(getPlaywrightTestTimeoutMs());
   let activePage = page;
 
-  /** เปิด Facebook ก่อนโหลด DB — กัน Chrome ค้างที่ about:blank ระหว่างรอ PostgreSQL */
-  console.log('🌐 กำลังเปิด facebook.com (โหลดรายการ Assignments จากฐานข้อมูลถัดไป)...');
-  await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 120_000 }).catch((e) => {
-    console.warn('เปิด facebook.com ครั้งแรกไม่สำเร็จ — จะลองอีกครั้งตอนล็อกอิน:', (e as Error)?.message || e);
-  });
+  /** ไม่ปล่อย about:blank ระหว่างรอ DB — ผู้ใช้เห็นว่าระบบทำงานอยู่ */
+  await showWorkerLoadingPage(page, LOADING_HTML_DB);
 
-  const config = await loadDynamicConfig();
+  /** โหลด config ก่อน — ห้าม goto facebook.com ก่อน restore session (ทำใน facebookLogin) */
+  console.log('⏳ กำลังโหลด Assignments จากฐานข้อมูล...');
+  const CONFIG_LOAD_MS = Math.min(300_000, Math.max(30_000, Number(process.env.CONFIG_LOAD_TIMEOUT_MS) || 120_000));
+  const config = await Promise.race([
+    loadDynamicConfig(),
+    new Promise<never>((_, rej) =>
+      setTimeout(() => rej(new Error(`หมดเวลาโหลด config (${Math.round(CONFIG_LOAD_MS / 1000)}s) — เช็ก DATABASE_URL / เครือข่าย`)), CONFIG_LOAD_MS)
+    ),
+  ]);
+  await showWorkerLoadingPage(page, LOADING_HTML_READY);
   const ensureActivePageForUser = async (user: {
     id: string;
     name?: string;
@@ -52,6 +70,14 @@ test('Dynamic Post: รันโพสต์ตาม Assignments', async ({ pag
 
   if (config.users.length === 0) {
     throw new Error('ไม่มี User ในระบบ — ตรวจสอบฐานข้อมูล (DATABASE_URL) หรือ data/users.json');
+  }
+  const usersWithCreds = config.users.filter(
+    (u) => String(u.email || '').trim() !== '' && String(u.password || '').trim() !== ''
+  );
+  if (usersWithCreds.length === 0) {
+    throw new Error(
+      'ไม่มี User ใดที่มี email+password สำหรับบอท — ใส่ในแก้ไข User (Admin) หรือตั้ง USER_{env_key}_EMAIL และ USER_{env_key}_PASSWORD ใน .env บนเครื่องที่รัน Playwright/worker'
+    );
   }
   let assignments = config.assignments;
   const filterIds = process.env.ASSIGNMENT_IDS?.split(',').map((s) => s.trim()).filter(Boolean);
