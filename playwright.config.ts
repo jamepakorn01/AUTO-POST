@@ -13,6 +13,8 @@ dotenv.config({ path: path.resolve(__dirname, '.env') });
  */
 export default defineConfig({
   testDir: './tests',
+  /** โพสต์ FB ใช้เวลานาน — กัน Playwright ปิดเทสต์ที่ 30s แล้วปิด Chrome กลางคัน */
+  timeout: 90 * 60 * 1000,
   /* Run tests in files in parallel */
   fullyParallel: true,
   /* Fail the build on CI if you accidentally left test.only in the source code. */

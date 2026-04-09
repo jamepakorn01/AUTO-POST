@@ -7,6 +7,12 @@ const path = require('path');
 const API_BASE = String(process.env.WORKER_API_BASE || '').replace(/\/$/, '');
 const TOKEN = String(process.env.POST_WORKER_TOKEN || '').trim();
 const INTERVAL_MS = Math.max(2000, Number(process.env.WORKER_POLL_MS) || 5000);
+/**
+ * จำนวนงานโพสต์ที่รันพร้อมกัน (แต่ละงาน = Chrome คนละหน้าต่าง / บัญชีละโปรเซส)
+ * ค่าเริ่มต้น 2 — ให้กด Assignment คนละบัญชีแล้วเริ่มได้พร้อมกัน (ไม่ต้องรอคิวจบงานแรก)
+ * ถ้าโพสต์แค่บัญชีเดียวและเจอ session เพี้ยน/Chrome ปิดเอง ให้ตั้ง WORKER_CONCURRENCY=1 ใน .env
+ */
+const CONCURRENCY = Math.max(1, Number(process.env.WORKER_CONCURRENCY) || 2);
 const PROJECT_ROOT = process.cwd();
 
 if (!API_BASE) {
@@ -19,7 +25,8 @@ if (!TOKEN) {
 }
 
 const workerId = `${os.hostname()}-${process.pid}`;
-let busy = false;
+let activeJobs = 0;
+let claiming = false;
 
 async function callApi(pathname, body) {
   const res = await fetch(`${API_BASE}${pathname}`, {
@@ -66,14 +73,12 @@ function runPlaywrightForJob(job) {
   });
 }
 
-async function tick() {
-  if (busy) return;
+async function processJob(job) {
+  activeJobs += 1;
+  console.log(
+    `[post-worker] picked job ${job.id} run_id=${job.run_id || '-'} assignments=${(job.assignment_ids || []).length} active=${activeJobs}/${CONCURRENCY}`
+  );
   try {
-    const claimed = await callApi('/api/worker/post/claim', { worker_id: workerId });
-    const job = claimed?.job || null;
-    if (!job) return;
-    busy = true;
-    console.log(`[post-worker] picked job ${job.id} run_id=${job.run_id || '-'} assignments=${(job.assignment_ids || []).length}`);
     try {
       await runPlaywrightForJob(job);
       await callApi('/api/worker/post/complete', {
@@ -92,17 +97,38 @@ async function tick() {
         error: e.message || String(e),
       });
       console.error(`[post-worker] job ${job.id} failed: ${e.message || e}`);
-    } finally {
-      busy = false;
+    }
+  } catch (e) {
+    console.error(`[post-worker] process job error: ${e.message || e}`);
+  } finally {
+    activeJobs = Math.max(0, activeJobs - 1);
+  }
+}
+
+async function tick() {
+  if (claiming) return;
+  if (activeJobs >= CONCURRENCY) return;
+  claiming = true;
+  try {
+    while (activeJobs < CONCURRENCY) {
+      const claimed = await callApi('/api/worker/post/claim', { worker_id: workerId });
+      const job = claimed?.job || null;
+      if (!job) break;
+      processJob(job).catch((e) => {
+        console.error(`[post-worker] unhandled process job error: ${e.message || e}`);
+      });
     }
   } catch (e) {
     console.error(`[post-worker] tick error: ${e.message || e}`);
+  } finally {
+    claiming = false;
   }
 }
 
 console.log('[post-worker] started');
 console.log(`[post-worker] api=${API_BASE}`);
 console.log(`[post-worker] worker_id=${workerId}`);
+console.log(`[post-worker] concurrency=${CONCURRENCY}`);
 setInterval(tick, INTERVAL_MS);
 tick();
 

@@ -2,6 +2,37 @@ import type { Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 
+const FB_STATE_LOCK_WAIT_MS = Math.min(600_000, Math.max(60_000, Number(process.env.FB_STATE_LOCK_WAIT_MS) || 180_000));
+const FB_STATE_LOCK_POLL_MS = 500;
+
+/** ล็อกข้ามโปรเซส — กันหลาย Playwright แย่งอ่าน/เขียน facebook-*.json พร้อมกัน */
+async function acquireFacebookStateLock(statePath: string): Promise<() => Promise<void>> {
+  const lockPath = `${statePath}.lock`;
+  const start = Date.now();
+  for (;;) {
+    try {
+      const fh = await fs.promises.open(lockPath, 'wx');
+      try {
+        await fh.writeFile(`${process.pid}\n${Date.now()}`, 'utf8');
+      } finally {
+        await fh.close();
+      }
+      return async () => {
+        await fs.promises.unlink(lockPath).catch(() => {});
+      };
+    } catch (e: unknown) {
+      const code = (e as NodeJS.ErrnoException)?.code;
+      if (code !== 'EEXIST') throw e;
+      if (Date.now() - start > FB_STATE_LOCK_WAIT_MS) {
+        throw new Error(
+          `รอล็อก session Facebook (${path.basename(lockPath)}) นานเกินไป — อาจมีบอท/Chrome อีกตัวใช้บัญชีเดียวกัน หรือลบไฟล์ ${lockPath} ถ้าค้าง`
+        );
+      }
+      await new Promise((r) => setTimeout(r, FB_STATE_LOCK_POLL_MS));
+    }
+  }
+}
+
 /**
  * Login Facebook (กรณียังไม่ได้ login)
  * รองรับทั้ง royal_email และ input#email
@@ -18,6 +49,8 @@ export async function facebookLogin(
   const authDir = path.join(process.cwd(), '.auth');
   const statePath = path.join(authDir, `facebook-${keyBase}.json`);
 
+  const releaseLock = await acquireFacebookStateLock(statePath);
+  try {
   let workingPage = page;
   if (workingPage.isClosed()) {
     workingPage = await workingPage.context().newPage();
@@ -134,6 +167,9 @@ export async function facebookLogin(
   await fs.promises.mkdir(authDir, { recursive: true }).catch(() => {});
   await workingPage.context().storageState({ path: statePath }).catch(() => {});
   return workingPage;
+  } finally {
+    await releaseLock();
+  }
 }
 
 async function dismissCommonFacebookPopups(page: Page): Promise<void> {

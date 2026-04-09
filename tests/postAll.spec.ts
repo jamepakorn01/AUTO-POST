@@ -21,7 +21,7 @@ function getJobIds(a: { job_ids?: string[]; job_id?: string }): string[] {
 }
 
 test('Dynamic Post: รันโพสต์ตาม Assignments', async ({ page, request }) => {
-  test.setTimeout(30 * 60 * 1000);
+  test.setTimeout(90 * 60 * 1000);
   let activePage = page;
   const config = await loadDynamicConfig();
   const ensureActivePageForUser = async (user: {
@@ -43,8 +43,7 @@ test('Dynamic Post: รันโพสต์ตาม Assignments', async ({ pag
   };
 
   if (config.users.length === 0) {
-    console.log('❌ ไม่มี User (ตรวจสอบ data/users.json หรือฐานข้อมูล)');
-    return;
+    throw new Error('ไม่มี User ในระบบ — ตรวจสอบฐานข้อมูล (DATABASE_URL) หรือ data/users.json');
   }
   let assignments = config.assignments;
   const filterIds = process.env.ASSIGNMENT_IDS?.split(',').map((s) => s.trim()).filter(Boolean);
@@ -53,8 +52,10 @@ test('Dynamic Post: รันโพสต์ตาม Assignments', async ({ pag
     console.log(`📌 โพสต์เฉพาะ Assignments: ${filterIds.join(', ')}`);
   }
   if (assignments.length === 0) {
-    console.log('❌ ไม่มี Assignment (ตรวจสอบ data/assignments.json หรือฐานข้อมูล)');
-    return;
+    const hint = filterIds?.length
+      ? `ไม่พบ Assignment ตาม ASSIGNMENT_IDS=${filterIds.join(',')}`
+      : 'ไม่มี Assignment ในระบบ — ตรวจสอบฐานข้อมูลหรือ data/assignments.json';
+    throw new Error(hint);
   }
 
   const groupMap = new Map<string, { fb_group_id: string; sheet_url?: string }>();
