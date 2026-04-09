@@ -989,12 +989,9 @@ function createListTools(tab, container, apiEntity, sourceItems = [], meta = {})
             }
             try {
               const out = await runPost([id]);
-              if (out?.queued) {
-                showAssignmentPostStatus(
-                  row,
-                  'เข้าคิวแล้ว — Chrome เปิดบนเครื่องที่รัน worker เท่านั้น (แต่ละแถวคิวแยก)',
-                  'queued'
-                );
+              const qmsg = assignmentPostQueuedStatusText(out);
+              if (qmsg) {
+                showAssignmentPostStatus(row, qmsg, 'queued');
               } else {
                 showAssignmentPostStatus(row, 'สั่งโพสต์ทันที (โหมดเซิร์ฟเวอร์ท้องถิ่น)', 'started');
               }
@@ -4305,14 +4302,15 @@ async function loadList() {
               postBtn.disabled = true;
               postBtn.textContent = 'กำลังเริ่ม...';
               const out = await runPost([item.id]);
-              if (out?.queued) {
-                showAssignmentPostStatus(
-                  row,
-                  'เข้าคิวแล้ว — Google Chrome จะเปิดบนเครื่องที่รัน npm run worker:post เท่านั้น (ไม่ใช่ในแท็บเบราว์เซอร์นี้) ถ้าไม่มี Chrome ให้เปิด worker และเช็ก POST_WORKER_TOKEN / WORKER_API_BASE',
-                  'queued'
-                );
+              const qmsg = assignmentPostQueuedStatusText(out);
+              if (qmsg) {
+                showAssignmentPostStatus(row, qmsg, 'queued');
                 showAppToast(
-                  'เข้าคิวแล้ว — Chrome เปิดที่เครื่อง Worker ไม่ใช่ในเว็บนี้',
+                  out?.worker_queue
+                    ? isVercelHostedAdmin()
+                      ? 'เข้าคิวแล้ว — เปิด worker บนเครื่องคุณ'
+                      : 'เข้าคิวแบบ Worker — ไม่เปิด Chrome ที่เครื่องนี้ (ดูข้อความใต้แถว)'
+                    : 'เข้าคิวรอ — บัญชีนี้กำลังโพสต์อยู่',
                   'success'
                 );
               } else {
@@ -4763,6 +4761,20 @@ function deleteItem(id, item) {
 // --- Run Post ---
 const RUN_POST_FETCH_MS = Math.min(120000, Math.max(15000, Number(window.RUN_POST_FETCH_MS) || 45000));
 
+/** ข้อความสถานะเมื่อ API ส่งคิวกลับมา — แยกโหมด Worker (DB) กับคิวใน-memory (บัญชีเดียวกันโพสต์ค้าง) */
+function assignmentPostQueuedStatusText(out) {
+  if (out?.worker_queue) {
+    if (isVercelHostedAdmin()) {
+      return 'เข้าคิวแล้ว — Google Chrome จะเปิดบนเครื่องที่รัน npm run worker:post เท่านั้น (ไม่ใช่ในแท็บเบราว์เซอร์นี้) ถ้าไม่มี Chrome ให้เปิด worker และเช็ก POST_WORKER_TOKEN / WORKER_API_BASE';
+    }
+    return 'เข้าคิวในระบบแล้ว — เซิร์ฟเวอร์อยู่โหมด Worker (ตั้ง POST_REMOTE_WORKER=1 หรือ env VERCEL=1) จึงไม่เปิด Chrome บนเครื่องที่รัน npm start — ให้รัน npm run worker:post บน PC ที่ WORKER_API_BASE ชี้มาที่นี่ และ token ตรงกัน หรือถ้าต้องการให้ Chrome เด้งที่เครื่องนี้: เอา POST_REMOTE_WORKER ออก / ไม่ตั้ง VERCEL ใน .env แล้วรีสตาร์ท npm start';
+  }
+  if (out?.queued) {
+    return 'เข้าคิวรอในบัญชีนี้ — โพสต์ชุดปัจจุบันยังไม่จบ ระบบจะรันชุดถัดไปอัตโนมัติ';
+  }
+  return '';
+}
+
 async function runPost(assignmentIds = []) {
   const body = Array.isArray(assignmentIds) && assignmentIds.length > 0
     ? { assignment_ids: assignmentIds }
@@ -4820,8 +4832,14 @@ document.getElementById('btn-run-post').addEventListener('click', async () => {
     btn.disabled = true;
     btn.textContent = 'กำลังเริ่ม...';
     const out = await runPost();
-    if (out?.queued) {
-      alert('รับคิวโพสต์แล้ว\n\nถ้าต้องการให้ Chrome เด้งบนเครื่องคุณ ให้เปิด worker ที่เครื่องจริง:\n`npm run worker:post`\n(ต้องตั้ง WORKER_API_BASE และ POST_WORKER_TOKEN ใน .env)');
+    if (out?.worker_queue) {
+      alert(
+        isVercelHostedAdmin()
+          ? 'รับคิวโพสต์แล้ว\n\nบน Vercel จะไม่เปิด Chrome ในเบราว์เซอร์นี้ — ให้รันบน PC:\nnpm run worker:post\nพร้อม WORKER_API_BASE ชี้มาที่โดเมนนี้ และ POST_WORKER_TOKEN ตรงกับที่ตั้งใน Vercel'
+          : 'รับคิวโพสต์แล้ว (โหมด Worker)\n\nเซิร์ฟเวอร์ localhost ตั้ง POST_REMOTE_WORKER=1 หรือ VERCEL=1 — จึงไม่เปิด Chrome ที่เครื่องนี้\n\nทางเลือก:\n• รัน npm run worker:post บน PC (token ตรงกับเซิร์ฟเวอร์)\n• หรือเอา POST_REMOTE_WORKER / VERCEL ออกจาก .env แล้วรีสตาร์ท npm start เพื่อให้กดโพสต์แล้ว Chrome เด้งทันที'
+      );
+    } else if (out?.queued) {
+      alert('รับคิวรอ — มีโพสต์ของบัญชีนี้กำลังรันอยู่ ระบบจะต่อคิวให้เมื่อชุดปัจจุบันจบ');
     } else {
       alert('กำลังสั่งเปิด Google Chrome สำหรับโพสต์\n\nถ้าไม่มีหน้าต่างขึ้น: ต้องติดตั้ง Google Chrome ในเครื่อง และดู Terminal ที่รัน npm start ว่ามี error หรือไม่');
     }

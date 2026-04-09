@@ -856,7 +856,9 @@ app.delete('/api/schedules/:id', async (req, res) => {
 let postProcess = null; // backward-compatible pointer to latest active process
 const postRunners = new Map(); // key=user_id, value={ user_id, process, status, run_id }
 const queuedAssignmentIdsByUser = new Map(); // key=user_id, value=Set<assignment_id>
-const USE_REMOTE_POST_WORKER = process.env.POST_REMOTE_WORKER === '1' || !!process.env.VERCEL;
+/** คิวใน DB + รอ worker — บน Vercel ใช้ VERCEL=1; บนเครื่องตัวเองให้ Chrome เด้งทันทีได้โดยไม่ตั้ง POST_REMOTE_WORKER และไม่ตั้ง VERCEL (อย่าใช้ !!VERCEL เดิม เพราะค่าอย่าง "0" ก็ truthy) */
+const USE_REMOTE_POST_WORKER =
+  process.env.POST_REMOTE_WORKER === '1' || process.env.VERCEL === '1';
 const POST_WORKER_TOKEN = String(process.env.POST_WORKER_TOKEN || '').trim();
 let runStatus = {
   running: false,
@@ -1007,6 +1009,65 @@ function startPostRunForUser(userId, assignmentIds = []) {
   return { runId, status: runner.status };
 }
 
+/**
+ * เริ่มโพสต์จากตาราง / run-now — โหมด Vercel/คิว = enqueue; โหมด local = spawn Playwright เหมือน POST /api/run/post
+ */
+async function startPostRun(assignmentIds = []) {
+  const ids = Array.isArray(assignmentIds) ? assignmentIds.map(String).filter(Boolean) : [];
+  if (USE_REMOTE_POST_WORKER) {
+    const row = await db.enqueuePostRunJob({
+      assignment_ids: ids,
+      requested_by: 'schedule',
+      message: ids.length > 0 ? `queued ${ids.length} assignments (schedule)` : 'queued all assignments (schedule)',
+    });
+    const runId = row?.id || db.generateRunId();
+    runStatus = {
+      ...runStatus,
+      running: false,
+      paused: false,
+      started_at: new Date().toISOString(),
+      finished_at: null,
+      message: 'รับคิวโพสต์แล้ว (ตาราง / run-now) รอ Worker',
+    };
+    return { runId, status: runStatus };
+  }
+  if (ids.length === 0) {
+    if (getActiveRunners().length > 0) {
+      const err = new Error('กำลังรัน Post อยู่แล้ว');
+      err.statusCode = 409;
+      throw err;
+    }
+    return startPostRunForUser('__all__', []);
+  }
+  const rows = await Promise.all(ids.map((id) => db.getAssignmentById(id)));
+  const missing = rows.findIndex((r) => !r);
+  if (missing >= 0) {
+    throw new Error(`ไม่พบ Assignment: ${ids[missing]}`);
+  }
+  const byUser = new Map();
+  rows.forEach((r, i) => {
+    const key = String(r.user_id || '').trim();
+    if (!byUser.has(key)) byUser.set(key, []);
+    byUser.get(key).push(ids[i]);
+  });
+  let firstRunId = null;
+  for (const [userId, userIds] of byUser.entries()) {
+    const existing = postRunners.get(userId);
+    if (existing?.process) {
+      queueAssignmentsForUser(userId, userIds);
+      continue;
+    }
+    const out = startPostRunForUser(userId, userIds);
+    if (!firstRunId) firstRunId = out.runId;
+  }
+  if (!firstRunId) {
+    const err = new Error('บัญชีที่เกี่ยวข้องกำลังโพสต์อยู่ — งานถูกใส่คิวแล้ว');
+    err.statusCode = 409;
+    throw err;
+  }
+  return { runId: firstRunId };
+}
+
 function runPwsh(command) {
   return new Promise((resolve, reject) => {
     const ps = spawn('powershell', ['-NoProfile', '-Command', command], { windowsHide: true });
@@ -1066,6 +1127,7 @@ app.post('/api/run/post', async (req, res) => {
       return res.json({
         ok: true,
         queued: true,
+        worker_queue: true,
         message: 'รับคิวโพสต์แล้ว (รอ Worker บนเครื่องคุณรับงาน)',
         status: runStatus,
       });
@@ -1077,7 +1139,13 @@ app.post('/api/run/post', async (req, res) => {
         return res.status(409).json({ error: 'กำลังรัน Post อยู่แล้ว', running: true, status: runStatus });
       }
       startPostRunForUser('__all__', []);
-      return res.json({ ok: true, message: 'กำลังเปิด Browser สำหรับโพสต์ - กรุณา Login Facebook', status: runStatus });
+      return res.json({
+        ok: true,
+        queued: false,
+        worker_queue: false,
+        message: 'กำลังเปิด Browser สำหรับโพสต์ - กรุณา Login Facebook',
+        status: runStatus,
+      });
     }
 
     const rows = await Promise.all(ids.map((id) => db.getAssignmentById(id)));
@@ -1109,7 +1177,13 @@ app.post('/api/run/post', async (req, res) => {
         : queued > 0
           ? `เข้าคิว ${queued} รายการ (บัญชีนี้กำลังโพสต์อยู่)`
           : `กำลังเปิด Browser สำหรับโพสต์ ${started} รายการ`;
-    res.json({ ok: true, queued: queued > 0, message: msg, status: runStatus });
+    res.json({
+      ok: true,
+      queued: queued > 0,
+      worker_queue: false,
+      message: msg,
+      status: runStatus,
+    });
   } catch (err) {
     if (err.statusCode === 409) {
       return res.status(409).json({ error: err.message, ...(err.payload || {}) });
@@ -1482,7 +1556,7 @@ app.post('/api/schedules/:id/run-now', async (req, res) => {
     const schedule = await db.getScheduleById(req.params.id);
     if (!schedule) return res.status(404).json({ error: 'Schedule not found' });
     const assignmentIds = Array.isArray(schedule.assignment_ids) ? schedule.assignment_ids : [];
-    const started = startPostRun(assignmentIds);
+    const started = await startPostRun(assignmentIds);
     await db.updateSchedule(schedule.id, {
       status: 'running',
       last_run_id: started.runId,
@@ -1507,7 +1581,7 @@ setInterval(async () => {
     if (!due) return;
     try {
       const assignmentIds = Array.isArray(due.assignment_ids) ? due.assignment_ids : [];
-      const started = startPostRun(assignmentIds);
+      const started = await startPostRun(assignmentIds);
       await db.updateSchedule(due.id, { status: 'running', last_run_id: started.runId, last_error: null });
     } catch (err) {
       await db.updateSchedule(due.id, { status: 'failed', last_error: err.message || String(err) });
@@ -1569,6 +1643,13 @@ function startServer(port) {
     console.log(
       `[AUTO-POST] ${SERVER_BUILD_MARK} | ${path.resolve(__filename)} | http://localhost:${serverListenPort}/api/fb-session-health`
     );
+    if (USE_REMOTE_POST_WORKER) {
+      console.log(
+        '[AUTO-POST] โหมดโพสต์: เข้าคิวใน DB — เปิด Chrome ด้วยคำสั่ง npm run worker:post บนเครื่องที่ตั้ง WORKER_API_BASE + POST_WORKER_TOKEN'
+      );
+    } else {
+      console.log('[AUTO-POST] โหมดโพสต์: กดโพสต์ใน Assignments จะเปิด Chrome บนเครื่องนี้ (กระบวนการเดียวกับ npm start)');
+    }
   });
   server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
