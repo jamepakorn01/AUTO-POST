@@ -1259,14 +1259,31 @@ app.get('/api/run/status', async (req, res) => {
 
 app.patch('/api/post-logs/:id/collect-result', async (req, res) => {
   try {
-    if (!leadCollectBot.isCollectPatchTokenValid(req.get('x-collect-token'))) {
+    const token = req.get('x-collect-token');
+    if (!leadCollectBot.isCollectPatchTokenValid(token)) {
       return res.status(403).json({ error: 'Forbidden' });
     }
     const { comment_count, customer_phone } = req.body || {};
     await leadCollectBot.updatePostLogFromCollect(req.params.id, comment_count, customer_phone);
+    await leadCollectBot.onCollectPatchDone(token);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+/** CSV สดระหว่างเก็บ Comment — รีเฟรชใน Excel: ข้อมูล → รีเฟรชทั้งหมด / Power Query ตั้งช่วงรีเฟรช */
+app.get('/api/run/collect-export/live.csv', async (req, res) => {
+  try {
+    const runId = String(req.query.run_id || '').trim();
+    if (!runId) return res.status(400).type('text/plain').send('run_id required');
+    const body = await leadCollectBot.getLiveCsvBody(runId);
+    if (body == null) return res.status(404).type('text/plain').send('unknown or expired run_id');
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.send(body);
+  } catch (e) {
+    res.status(500).type('text/plain').send(e.message || String(e));
   }
 });
 

@@ -68,11 +68,40 @@ async function postFacebookSessionCheck(userId) {
   );
 }
 
-let collectStatusPollTimer = null;
+const COLLECT_TRACKED_STORAGE_KEY = 'ap_collect_tracked_run_ids';
+/** run_id ที่ยังแสดงการ์ดสถานะ (กดเก็บ Comment แล้ว / กลับมาดูหลังรีเฟรช) */
+const collectTrackedRunIds = new Set();
+/** loadLeadCollectTab กำหนด: อัปเดตการ์ดในแท็บเมื่อมีข้อมูลใหม่ */
+let leadCollectStatusRenderer = null;
 
 /** รีโหลดรายการ «เก็บ Comment» หลังโพสต์/คิวจบ — ตั้งค่าใน loadLeadCollectTab */
 let leadCollectRefetchFn = null;
 let lastPostQueueGloballyBusy = false;
+
+function loadCollectTrackedFromStorage() {
+  try {
+    const raw = sessionStorage.getItem(COLLECT_TRACKED_STORAGE_KEY);
+    if (!raw) return;
+    JSON.parse(raw).forEach((id) => collectTrackedRunIds.add(String(id)));
+  } catch (_) {}
+}
+
+function saveCollectTrackedToStorage() {
+  try {
+    sessionStorage.setItem(COLLECT_TRACKED_STORAGE_KEY, JSON.stringify([...collectTrackedRunIds]));
+  } catch (_) {}
+}
+
+function addCollectTrackedIds(ids) {
+  let changed = false;
+  for (const id of ids) {
+    const s = String(id || '').trim();
+    if (!s) continue;
+    if (!collectTrackedRunIds.has(s)) changed = true;
+    collectTrackedRunIds.add(s);
+  }
+  if (changed) saveCollectTrackedToStorage();
+}
 
 function tryLeadCollectRefetch() {
   try {
@@ -87,11 +116,76 @@ function scheduleLeadCollectRefetchDelays() {
   [400, 2000, 5000].forEach((ms) => setTimeout(() => tryLeadCollectRefetch(), ms));
 }
 
-function stopCollectStatusPoll() {
-  if (collectStatusPollTimer) {
-    clearInterval(collectStatusPollTimer);
-    collectStatusPollTimer = null;
+function ensureCollectGlobalDock() {
+  let el = document.getElementById('collect-global-dock');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'collect-global-dock';
+  el.className = 'fixed bottom-4 left-4 z-[90] max-w-[min(320px,92vw)] pointer-events-auto hidden';
+  document.body.appendChild(el);
+  return el;
+}
+
+function renderGlobalCollectDock(runs) {
+  const list = Array.isArray(runs) ? runs : [];
+  const active = list.filter((x) => x && x.running);
+  const el = ensureCollectGlobalDock();
+  if (active.length === 0) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
   }
+  el.classList.remove('hidden');
+  const origin = typeof location !== 'undefined' && location.origin ? location.origin : '';
+  el.innerHTML = `<div class="rounded-xl border border-indigo-200 bg-white shadow-lg p-3 text-xs text-slate-800 space-y-2">
+    <p class="font-semibold text-indigo-900">กำลังเก็บ Comment</p>
+    <p class="text-slate-600 leading-relaxed">สลับแท็บหรือรีเฟรชหน้าได้ — บอทรันที่เซิร์ฟเวอร์จนจบ</p>
+    <ul class="space-y-2 list-none m-0 p-0">
+      ${active
+        .map((r) => {
+          const rid = String(r.run_id || '');
+          const csvUrl = `${origin}/api/run/collect-export/live.csv?run_id=${encodeURIComponent(rid)}`;
+          return `<li class="border-t border-slate-100 pt-2">
+            <div class="font-medium text-slate-700">${escapeHtml(String(r.user_name || r.user_id || '-'))}</div>
+            <a class="text-red-600 hover:underline break-all" href="${escapeHtml(csvUrl)}" target="_blank" rel="noopener">เปิด CSV สด (อัปเดตทุกครั้งที่เก็บโพสต์ได้)</a>
+          </li>`;
+        })
+        .join('')}
+    </ul>
+    <button type="button" class="collect-dock-goto-tab btn-secondary text-xs w-full py-1.5">ไปแท็บเก็บ Comment</button>
+  </div>`;
+  el.querySelector('.collect-dock-goto-tab')?.addEventListener('click', () => setActiveTab('lead_collect'));
+}
+
+async function refreshCollectGlobalUI() {
+  try {
+    const r = await fetch(`${API}/run/collect-status`, { cache: 'no-store' });
+    if (!r.ok) return;
+    const d = await r.json();
+    const runs = Array.isArray(d.runs) ? d.runs : d.run_id ? [d] : [];
+    renderGlobalCollectDock(runs);
+    leadCollectStatusRenderer?.(runs);
+  } catch (_) {}
+}
+
+/** เปิดแท็บ CSV สดหลังสั่งเก็บ — ใช้ร่วมกับ Excel (รีเฟรชด้วยมือหรือ Power Query) */
+function openCollectLiveCsvTabs(apiResponse) {
+  const origin = typeof location !== 'undefined' && location.origin ? location.origin : '';
+  const urls = [];
+  const started = Array.isArray(apiResponse?.started) ? apiResponse.started : [];
+  if (started.length) {
+    started.forEach((s) => {
+      if (s?.run_id) urls.push(`${origin}/api/run/collect-export/live.csv?run_id=${encodeURIComponent(String(s.run_id))}`);
+    });
+  } else if (apiResponse?.run_id) {
+    urls.push(`${origin}/api/run/collect-export/live.csv?run_id=${encodeURIComponent(String(apiResponse.run_id))}`);
+  }
+  if (!urls.length) return;
+  urls.forEach((u, i) => setTimeout(() => window.open(u, '_blank', 'noopener noreferrer'), i * 500));
+  showAppToast(
+    'เปิด CSV สดแล้ว — ใน Excel ใช้ «ข้อมูล → รีเฟรชทั้งหมด» หรือ Power Query ตั้งรีเฟรชอัตโนมัติ',
+    'success'
+  );
 }
 const DEFAULT_BLACKLIST_GROUP_IDS = ['1073449637181260', '550295531832556'];
 const DEFAULT_JOB_OWNERS = ['แบงค์', 'อ้น', 'เล็ก', 'คิว', 'ตี้', 'หมี', 'ตั้ม'];
@@ -1638,7 +1732,6 @@ document.addEventListener('keydown', (e) => {
 // --- UI ---
 async function setActiveTab(tab) {
   currentTab = tab;
-  if (tab !== 'lead_collect') stopCollectStatusPoll();
   editingId = null;
   editingGroupFolder = null;
   closeFormModal();
@@ -3213,6 +3306,7 @@ function localDateISO(d) {
 }
 
 async function loadLeadCollectTab() {
+  leadCollectStatusRenderer = null;
   const container = document.getElementById('list-container');
   container.className = 'min-h-[240px] p-4 sm:p-6';
 
@@ -3256,7 +3350,7 @@ async function loadLeadCollectTab() {
     ${vercelCollectHint}
     <div class="rounded-xl border border-slate-200 bg-white p-4 mb-4 shadow-sm">
       <p class="text-sm font-semibold text-slate-800 mb-1">เลือกช่วงวันที่โพสต์และบัญชี</p>
-      <p class="text-xs text-slate-500 mb-3">เลือกทีละบัญชีแล้วกดเก็บ Comment จากนั้นเปลี่ยนบัญชีแล้วกดรันต่อได้ โดยสถานะจะแยกเป็นกล่องรายบัญชีอัตโนมัติ</p>
+      <p class="text-xs text-slate-500 mb-3">เลือกทีละบัญชีแล้วกดเก็บ Comment — สลับแท็บหรือรีเฟรชได้ บอทรันต่อที่เซิร์ฟเวอร์จนจบ ระบบจะเปิดแท็บ <strong>CSV สด</strong> ให้เปิดใน Excel แล้วกดรีเฟรชเมื่อต้องการดึงเบอร์/จำนวน Comment ล่าสุด (หรือใช้ Power Query ตั้งรีเฟรชอัตโนมัติ)</p>
       <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end">
         <div>
           <label class="block text-xs text-slate-500 mb-1">วันที่โพสต์เริ่ม (ไทย)</label>
@@ -3339,7 +3433,6 @@ async function loadLeadCollectTab() {
   };
 
   const hiddenStatusRunIds = new Set();
-  const collectTrackedRunIds = new Set();
   let autoFetchTimer = null;
   const collectOpenBtnToneClass = (progress) => {
     if (progress >= 100) return 'bg-emerald-50 text-emerald-800 border-emerald-300';
@@ -3411,7 +3504,8 @@ async function loadLeadCollectTab() {
     const latest = shown.slice(0, 3);
     stack.innerHTML = latest
       .map((run) => {
-        const rid = escapeHtml(String(run.run_id || ''));
+        const ridRaw = String(run.run_id || '');
+        const ridAttr = ridRaw.replace(/"/g, '&quot;');
         const isRunning = !!run.running;
         const isSuccessDone =
           !isRunning &&
@@ -3425,6 +3519,8 @@ async function loadLeadCollectTab() {
         const canResume = isRunning && !!run.paused;
         const canCancel = isRunning;
         const logHtml = logs.slice(-3).map((l) => `<li>${escapeHtml(l.message || '')}</li>`).join('');
+        const originCsv = typeof location !== 'undefined' && location.origin ? location.origin : '';
+        const csvLiveUrl = `${originCsv}/api/run/collect-export/live.csv?run_id=${encodeURIComponent(ridRaw)}`;
         const progressTone = progress >= 100
           ? 'border-emerald-200 bg-emerald-50'
           : progress >= 70
@@ -3438,7 +3534,7 @@ async function loadLeadCollectTab() {
         return `<div class="rounded-xl border ${cardTone} p-3 text-sm shadow-sm">
           <div class="flex items-start justify-between gap-2 mb-1">
             <p class="text-xs font-semibold text-slate-600">${title}</p>
-            <button type="button" class="collect-status-hide-one text-sm text-slate-500 hover:text-slate-700" data-run-id="${rid}" aria-label="close-status">ปิด</button>
+            <button type="button" class="collect-status-hide-one text-sm text-slate-500 hover:text-slate-700" data-run-id="${ridAttr}" aria-label="close-status">ปิด</button>
           </div>
           <p class="text-sm mb-1 text-slate-700">${escapeHtml(run.message || '-')} · ${progress}%</p>
           <div class="mb-2 grid grid-cols-3 gap-2 border-t border-slate-200 pt-2">
@@ -3447,6 +3543,7 @@ async function loadLeadCollectTab() {
             <button type="button" class="collect-status-action rounded-lg px-2 py-1 text-xs border border-red-300 text-red-600 hover:bg-red-50 disabled:opacity-40" data-action="cancel" data-user-id="${uid}" ${canCancel ? '' : 'disabled'}>ยกเลิกงานนี้</button>
           </div>
           <ul class="max-h-32 overflow-y-auto text-xs space-y-0.5 list-disc pl-4 text-slate-600">${logHtml || '<li>ยังไม่มี log ล่าสุด</li>'}</ul>
+          <p class="mt-2 text-[11px]"><a class="text-red-600 hover:underline" href="${escapeHtml(csvLiveUrl)}" target="_blank" rel="noopener">CSV สด (รีเฟรชใน Excel)</a></p>
         </div>`;
       })
       .join('');
@@ -3455,6 +3552,8 @@ async function loadLeadCollectTab() {
         const rid = String(btn.getAttribute('data-run-id') || '').trim();
         if (!rid) return;
         hiddenStatusRunIds.add(rid);
+        collectTrackedRunIds.delete(rid);
+        saveCollectTrackedToStorage();
         renderStatusCards(runs);
         if (openBtn) openBtn.classList.remove('hidden');
       });
@@ -3467,7 +3566,7 @@ async function loadLeadCollectTab() {
           if (!action || !userId) return;
           btn.disabled = true;
           await collectControl(action, userId);
-          await refreshCollectStatusOnce();
+          await refreshCollectGlobalUI();
         } catch (e) {
           alert(e.message || String(e));
         } finally {
@@ -3475,33 +3574,6 @@ async function loadLeadCollectTab() {
         }
       });
     });
-  };
-
-  const refreshCollectStatusOnce = async () => {
-    try {
-      const r = await fetch(API + '/run/collect-status');
-      const d = await r.json();
-      const runs = Array.isArray(d.runs) ? d.runs : (d.run_id ? [d] : []);
-      const visibleRuns = runs.filter((x) => x && x.run_id && (x.running || collectTrackedRunIds.has(String(x.run_id))));
-      renderStatusCards(visibleRuns);
-      return !!d.running;
-    } catch {
-      return false;
-    }
-  };
-
-  const startCollectStatusPoll = () => {
-    if (typeof collectStatusPollTimer !== 'undefined' && collectStatusPollTimer) {
-      clearInterval(collectStatusPollTimer);
-    }
-    refreshCollectStatusOnce();
-    collectStatusPollTimer = setInterval(async () => {
-      const go = await refreshCollectStatusOnce();
-      if (!go && collectStatusPollTimer) {
-        clearInterval(collectStatusPollTimer);
-        collectStatusPollTimer = null;
-      }
-    }, 2000);
   };
 
   const groupKey = (r) => `${String(r.user_id || '-')}:${String(r.job_id || 'nojob')}::${String(r.job_title || '(ไม่มีชื่องาน)').slice(0, 120)}`;
@@ -3683,12 +3755,17 @@ async function loadLeadCollectTab() {
         const firstErr = Array.isArray(data.errors) && data.errors[0] ? data.errors[0].error : '';
         throw new Error(firstErr || data.error || res.statusText);
       }
+      const newRunIds = [];
       if (Array.isArray(data.started) && data.started.length > 0) {
-        data.started.forEach((s) => { if (s?.run_id) collectTrackedRunIds.add(String(s.run_id)); });
+        data.started.forEach((s) => {
+          if (s?.run_id) newRunIds.push(String(s.run_id));
+        });
       } else if (data.run_id) {
-        collectTrackedRunIds.add(String(data.run_id));
+        newRunIds.push(String(data.run_id));
       }
-      startCollectStatusPoll();
+      addCollectTrackedIds(newRunIds);
+      openCollectLiveCsvTabs(data);
+      await refreshCollectGlobalUI();
     } catch (e) {
       alert('สั่งรันไม่สำเร็จ: ' + e.message);
     }
@@ -3698,12 +3775,20 @@ async function loadLeadCollectTab() {
   statusOpen?.addEventListener('click', () => {
     hiddenStatusRunIds.clear();
     statusOpen.classList.add('hidden');
-    refreshCollectStatusOnce();
+    refreshCollectGlobalUI();
   });
 
-  await refreshCollectStatusOnce();
-  const st = await fetch(API + '/run/collect-status').then((r) => r.json()).catch(() => ({}));
-  if (st.running) startCollectStatusPoll();
+  leadCollectStatusRenderer = (runs) => {
+    if (currentTab !== 'lead_collect') return;
+    const stack = document.getElementById('collect-status-stack');
+    if (!stack) return;
+    const visibleRuns = runs.filter(
+      (x) => x && x.run_id && (x.running || collectTrackedRunIds.has(String(x.run_id)))
+    );
+    renderStatusCards(visibleRuns);
+  };
+
+  await refreshCollectGlobalUI();
   if (String(document.getElementById('collect-user-id')?.value || '').trim()) {
     runFetch();
   }
@@ -5080,6 +5165,10 @@ function renderPostStatusCards(status) {
 }
 setInterval(refreshRunStatusBanner, 4000);
 refreshRunStatusBanner();
+
+loadCollectTrackedFromStorage();
+setInterval(refreshCollectGlobalUI, 3500);
+refreshCollectGlobalUI();
 
 mountVercelSidebarPostHint();
 setActiveTab('users');

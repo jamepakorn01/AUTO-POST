@@ -19,6 +19,7 @@ User4Worker.json
 
 # Dynamic config data (มีข้อมูลจาก Web Admin)
 data/*.json
+data/collect-exports/
 !data/.gitkeep
 
 # Dependencies

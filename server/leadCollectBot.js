@@ -15,6 +15,13 @@ const logger = require('./logger');
  * }>} */
 const collectRunsByUser = new Map();
 const collectTokenToUser = new Map();
+/** patch token → collect run_id (สำหรับอัปเดต CSV หลังแต่ละโพสต์) */
+const collectTokenToRunId = new Map();
+/**
+ * run_id → meta ส่งออก CSV สด
+ * @type {Map<string, { user_id: string, post_log_ids: string[], projectRoot: string }>}
+ */
+const collectExportByRunId = new Map();
 
 function runPwsh(command) {
   return new Promise((resolve, reject) => {
@@ -117,6 +124,82 @@ function isCollectRunning(userId) {
   return false;
 }
 
+function escCsvCell(v) {
+  const s = String(v ?? '');
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+async function buildCollectCsvString(runId) {
+  const meta = collectExportByRunId.get(runId);
+  if (!meta) return null;
+  const dbRows = await db.getPostLogsByIdsForUser(meta.post_log_ids, meta.user_id);
+  const byId = new Map(dbRows.map((r) => [String(r.id), r]));
+  const headers = [
+    'เวลาโพสต์',
+    'บัญชี',
+    'เจ้าของงาน',
+    'ชื่องาน',
+    'ชื่อกลุ่ม',
+    'ลิงก์โพสต์',
+    'จำนวน_Comment',
+    'เบอร์_โทร',
+  ];
+  const lines = [headers.map(escCsvCell).join(',')];
+  for (const id of meta.post_log_ids) {
+    const r = byId.get(String(id));
+    if (!r) continue;
+    const t = r.created_at
+      ? new Date(r.created_at).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' })
+      : '';
+    lines.push(
+      [
+        t,
+        r.poster_name || r.fb_account_name || r.user_id || '',
+        r.owner || '',
+        r.job_title || '',
+        r.group_name || '',
+        r.post_link || '',
+        r.comment_count != null ? String(r.comment_count) : '0',
+        r.customer_phone || '',
+      ]
+        .map(escCsvCell)
+        .join(',')
+    );
+  }
+  return `\uFEFF${lines.join('\r\n')}`;
+}
+
+async function flushCollectExportCsv(runId) {
+  const body = await buildCollectCsvString(runId);
+  if (body == null) return;
+  const meta = collectExportByRunId.get(runId);
+  if (!meta) return;
+  const outDir = path.join(meta.projectRoot, 'data', 'collect-exports');
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(path.join(outDir, `${runId}.csv`), body, 'utf8');
+}
+
+/**
+ * หลัง PATCH collect-result — รีเฟรชไฟล์/เนื้อหา CSV สด
+ * @param {string} patchToken
+ */
+async function onCollectPatchDone(patchToken) {
+  const t = String(patchToken || '').trim();
+  const runId = collectTokenToRunId.get(t);
+  if (!runId) return;
+  await flushCollectExportCsv(runId);
+}
+
+/**
+ * @returns {Promise<string|null>}
+ */
+async function getLiveCsvBody(runId) {
+  const rid = String(runId || '').trim();
+  if (!rid || !collectExportByRunId.has(rid)) return null;
+  return buildCollectCsvString(rid);
+}
+
 /**
  * @param {string} userId
  * @param {string[]} postLogIds
@@ -164,6 +247,12 @@ async function startCollectCommentsRun(userId, postLogIds, opts) {
   const runId = `collect_${db.generateRunId()}`;
   const patchToken = crypto.randomBytes(24).toString('hex');
   collectTokenToUser.set(patchToken, uid);
+  collectTokenToRunId.set(patchToken, runId);
+  collectExportByRunId.set(runId, {
+    user_id: uid,
+    post_log_ids: rows.map((r) => String(r.id)),
+    projectRoot: opts.projectRoot,
+  });
 
   const toBangkokDate = (d) => {
     if (!d) return '';
@@ -247,11 +336,20 @@ async function startCollectCommentsRun(userId, postLogIds, opts) {
   collectRunsByUser.set(uid, { process: child, patchToken, status });
   logger.info('collect_bot.spawn', { shell: isWin ? 'cmd' : 'npx', args: pwArgs.join(' '), run_id: runId, user_id: uid });
 
+  setImmediate(() => {
+    flushCollectExportCsv(runId).catch((e) =>
+      logger.error('collect_export.initial', { run_id: runId, message: e.message || String(e) })
+    );
+  });
+
   child.on('close', (code) => {
     const entry = collectRunsByUser.get(uid);
     if (!entry) return;
     entry.process = null;
-    if (entry.patchToken) collectTokenToUser.delete(entry.patchToken);
+    if (entry.patchToken) {
+      collectTokenToUser.delete(entry.patchToken);
+      collectTokenToRunId.delete(entry.patchToken);
+    }
     entry.patchToken = null;
     entry.status = {
       ...entry.status,
@@ -264,13 +362,17 @@ async function startCollectCommentsRun(userId, postLogIds, opts) {
     };
     collectRunsByUser.set(uid, entry);
     logger.info('collect_bot.close', { exit_code: code, run_id: runId, user_id: uid });
+    flushCollectExportCsv(runId).catch(() => {});
   });
 
   child.on('error', (err) => {
     const entry = collectRunsByUser.get(uid);
     if (!entry) return;
     entry.process = null;
-    if (entry.patchToken) collectTokenToUser.delete(entry.patchToken);
+    if (entry.patchToken) {
+      collectTokenToUser.delete(entry.patchToken);
+      collectTokenToRunId.delete(entry.patchToken);
+    }
     entry.patchToken = null;
     entry.status = {
       ...entry.status,
@@ -342,4 +444,7 @@ module.exports = {
   cancelCollectRun,
   updatePostLogFromCollect: (id, commentCount, customerPhone) =>
     db.updatePostLogCollectResult(id, commentCount, customerPhone),
+  onCollectPatchDone,
+  getLiveCsvBody,
+  hasCollectExport: (runId) => collectExportByRunId.has(String(runId || '').trim()),
 };
