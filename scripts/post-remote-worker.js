@@ -70,10 +70,10 @@ async function callApi(pathname, body) {
   return data;
 }
 
-/** งานโพสต์หนึ่งงานนานได้ — ค่า default 4 ชม.; เกินแล้วฆ่า Playwright เพื่อคืนช่อง concurrency */
+/** งานโพสต์หนึ่งงานนานได้ — default 8 ชม. (ต้อง ≥ Playwright timeout; ดู PLAYWRIGHT_GLOBAL_TIMEOUT_MS) */
 const JOB_MAX_MS = Math.min(
   12 * 60 * 60 * 1000,
-  Math.max(10 * 60 * 1000, Number(process.env.WORKER_POST_JOB_MAX_MS) || 4 * 60 * 60 * 1000)
+  Math.max(10 * 60 * 1000, Number(process.env.WORKER_POST_JOB_MAX_MS) || 8 * 60 * 60 * 1000)
 );
 
 function runPlaywrightForJob(job) {

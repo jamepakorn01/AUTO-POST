@@ -3,6 +3,7 @@
  * อ่าน config จาก data/*.json + .env
  */
 import { test } from '@playwright/test';
+import { getPlaywrightTestTimeoutMs } from '../playwright-test-timeout';
 import {
   loadDynamicConfig,
   facebookLogin,
@@ -21,7 +22,7 @@ function getJobIds(a: { job_ids?: string[]; job_id?: string }): string[] {
 }
 
 test('Dynamic Post: รันโพสต์ตาม Assignments', async ({ page, request }) => {
-  test.setTimeout(90 * 60 * 1000);
+  test.setTimeout(getPlaywrightTestTimeoutMs());
   let activePage = page;
   const config = await loadDynamicConfig();
   const ensureActivePageForUser = async (user: {
