@@ -24,6 +24,13 @@ function getJobIds(a: { job_ids?: string[]; job_id?: string }): string[] {
 test('Dynamic Post: รันโพสต์ตาม Assignments', async ({ page, request }) => {
   test.setTimeout(getPlaywrightTestTimeoutMs());
   let activePage = page;
+
+  /** เปิด Facebook ก่อนโหลด DB — กัน Chrome ค้างที่ about:blank ระหว่างรอ PostgreSQL */
+  console.log('🌐 กำลังเปิด facebook.com (โหลดรายการ Assignments จากฐานข้อมูลถัดไป)...');
+  await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 120_000 }).catch((e) => {
+    console.warn('เปิด facebook.com ครั้งแรกไม่สำเร็จ — จะลองอีกครั้งตอนล็อกอิน:', (e as Error)?.message || e);
+  });
+
   const config = await loadDynamicConfig();
   const ensureActivePageForUser = async (user: {
     id: string;
@@ -49,7 +56,8 @@ test('Dynamic Post: รันโพสต์ตาม Assignments', async ({ pag
   let assignments = config.assignments;
   const filterIds = process.env.ASSIGNMENT_IDS?.split(',').map((s) => s.trim()).filter(Boolean);
   if (filterIds && filterIds.length > 0) {
-    assignments = assignments.filter((a) => filterIds.includes(a.id));
+    const wanted = new Set(filterIds.map(String));
+    assignments = assignments.filter((a) => wanted.has(String(a.id)));
     console.log(`📌 โพสต์เฉพาะ Assignments: ${filterIds.join(', ')}`);
   }
   if (assignments.length === 0) {

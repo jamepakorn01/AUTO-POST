@@ -933,7 +933,7 @@ function startPostRunForUser(userId, assignmentIds = []) {
   const isWin = process.platform === 'win32';
   let child = null;
   if (isWin) {
-    const cmdArgs = ['npx', 'playwright', 'test', 'postAll', '--headed', '--project=Google Chrome'];
+    const cmdArgs = ['npx', 'playwright', 'test', 'postAll', '--headed', '--project=GoogleChrome'];
     child = spawn('cmd.exe', ['/d', '/c', ...cmdArgs], {
       cwd: PROJECT_ROOT,
       stdio: 'inherit',
@@ -943,7 +943,7 @@ function startPostRunForUser(userId, assignmentIds = []) {
     });
     logger.info('post_bot.spawn', { shell: 'cmd', args: cmdArgs.join(' '), run_id: runId, user_id: key });
   } else {
-    const pwArgs = ['playwright', 'test', 'postAll', '--headed', '--project=Google Chrome'];
+    const pwArgs = ['playwright', 'test', 'postAll', '--headed', '--project=GoogleChrome'];
     child = spawn('npx', pwArgs, {
       cwd: PROJECT_ROOT,
       stdio: 'inherit',

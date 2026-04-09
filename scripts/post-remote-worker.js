@@ -81,7 +81,7 @@ function runPlaywrightForJob(job) {
     const assignmentIds = Array.isArray(job.assignment_ids) ? job.assignment_ids.map(String).filter(Boolean) : [];
     const env = { ...process.env, FORCE_COLOR: '1', RUN_ID: String(job.run_id || ''), RUN_LOG_API_URL: API_BASE };
     if (assignmentIds.length > 0) env.ASSIGNMENT_IDS = assignmentIds.join(',');
-    const args = ['playwright', 'test', 'postAll', '--headed', '--project=Google Chrome'];
+    const args = ['playwright', 'test', 'postAll', '--headed', '--project=GoogleChrome'];
     const isWin = process.platform === 'win32';
     const child = isWin
       ? spawn('cmd.exe', ['/d', '/c', 'npx', ...args], {

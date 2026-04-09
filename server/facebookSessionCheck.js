@@ -102,7 +102,7 @@ async function startCheckSession(userId, opts) {
     CHECK_SESSION_LABEL: userLabel,
   };
 
-  const pwArgs = ['playwright', 'test', 'checkFacebookSession', '--headed', '--project=Google Chrome'];
+  const pwArgs = ['playwright', 'test', 'checkFacebookSession', '--headed', '--project=GoogleChrome'];
   const isWin = process.platform === 'win32';
   const child = isWin
     ? spawn('cmd.exe', ['/d', '/c', 'npx', ...pwArgs], {

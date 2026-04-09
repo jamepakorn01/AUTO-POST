@@ -307,7 +307,7 @@ async function startCollectCommentsRun(userId, postLogIds, opts) {
 
   const isWin = process.platform === 'win32';
   const pwArgs = useHeadedChrome
-    ? ['playwright', 'test', 'collectComments', '--headed', '--project=Google Chrome']
+    ? ['playwright', 'test', 'collectComments', '--headed', '--project=GoogleChrome']
     : ['playwright', 'test', 'collectComments', '--project=ChromiumCollect'];
 
   logger.info('collect_bot.mode', {

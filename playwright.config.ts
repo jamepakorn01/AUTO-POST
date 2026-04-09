@@ -38,22 +38,23 @@ export default defineConfig({
   },
 
   /* Configure projects for major browsers */
- projects: [
-  {
-    name: 'Google Chrome',
-    use: { ...devices['Desktop Chrome'], channel: 'chrome' }, // ใช้ Google Chrome ในเครื่อง
-  },
-  {
-    name: 'ChromiumCollect',
-    /** ใช้ Chrome จริงแบบ headless — ลดปัญหา session / ตรวจจับบอทเมื่อเทียบกับ Chromium ที่ bundle มา */
-    use: {
-      ...devices['Desktop Chrome'],
-      channel: 'chrome',
-      headless: true,
+  projects: [
+    {
+      /** ไม่มีช่องว่างในชื่อ — กัน Windows/cmd แยก argv ผิดแล้ว Playwright ไม่รันโปรเจกต์ที่ตั้งใจ (หน้าเปล่า) */
+      name: 'GoogleChrome',
+      use: { ...devices['Desktop Chrome'], channel: 'chrome' },
     },
-  },
-  // { name: 'firefox', use: { ...devices['Desktop Firefox'] } }, <-- ปิดพวกนี้ไว้
-],
+    {
+      name: 'ChromiumCollect',
+      /** รันเฉพาะเทสต์เก็บ comment — ไม่รัน postAll/checkFacebookSession ซ้ำแบบ headless */
+      testMatch: ['**/collectComments.spec.ts', '**/collectPostComments.logic.spec.ts'],
+      use: {
+        ...devices['Desktop Chrome'],
+        channel: 'chrome',
+        headless: true,
+      },
+    },
+  ],
 
   /* Run your local dev server before starting the tests */
   // webServer: {

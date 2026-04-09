@@ -66,7 +66,7 @@ npm run test:postAll
 หรือ
 
 ```bash
-npx playwright test postAll --headed --project=chromium
+npx playwright test postAll --headed --project=GoogleChrome
 ```
 
 Bot จะอ่านจาก `data/*.json` + `.env` แล้วโพสต์ตาม Assignments

@@ -47,8 +47,8 @@ Web Admin (CRUD) → Express API → PostgreSQL
 ## 4. สิ่งที่แก้ไขแล้ว
 
 ### 4.1 Playwright Project Name
-- **ปัญหา:** Server ใช้ `--project=chromium` แต่ config กำหนด `name: 'Google Chrome'`
-- **แก้:** เปลี่ยนเป็น `--project=Google Chrome`
+- **ปัญหา:** Server ใช้ `--project=chromium` แต่ config กำหนดโปรเจกต์ Chrome จริง
+- **แก้:** ใช้ `--project=GoogleChrome` (ไม่มีช่องว่าง — กัน argv บน Windows ผิดพลาด)
 
 ### 4.2 postToGroupWorker
 - **ปัญหา:** fbName hardcoded เป็น `'User 4'`
