@@ -1332,6 +1332,28 @@ function showAppToast(message, kind = 'success') {
   }, 7500);
 }
 
+if (!window.__apCollectPhoneCopyBound) {
+  window.__apCollectPhoneCopyBound = true;
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.collect-copy-phone-btn');
+    if (!btn) return;
+    const enc = btn.getAttribute('data-copy');
+    if (enc == null || enc === '') return;
+    let text = '';
+    try {
+      text = decodeURIComponent(enc);
+    } catch {
+      return;
+    }
+    if (!String(text).trim()) return;
+    e.preventDefault();
+    navigator.clipboard.writeText(text).then(
+      () => showAppToast('คัดลอกเบอร์แล้ว — วางส่งทีมได้เลย', 'success'),
+      () => alert('คัดลอกไม่สำเร็จ — ลองอนุญาตคลิปบอร์ดในเบราว์เซอร์')
+    );
+  });
+}
+
 function showAssignmentPostStatus(rowEl, message, kind = 'info') {
   if (!rowEl) return;
   let box = rowEl.querySelector('.assignment-post-status');
@@ -3624,6 +3646,11 @@ async function loadLeadCollectTab() {
         const t = r.created_at ? new Date(r.created_at).toLocaleString('th-TH', { timeZone: 'Asia/Bangkok' }) : '-';
         const pid = escapeHtml(r.id);
         const uid = escapeHtml(r.user_id || '');
+        const phoneRaw = String(r.customer_phone || '').trim();
+        const phoneDisplay = phoneRaw || '-';
+        const copyBtn = phoneRaw
+          ? `<button type="button" class="collect-copy-phone-btn shrink-0 text-[11px] px-2 py-0.5 rounded-md border border-red-200 bg-white text-red-700 hover:bg-red-50 font-medium" data-copy="${encodeURIComponent(phoneRaw)}" title="คัดลอกเบอร์ทั้งหมดในช่องนี้">คัดลอก</button>`
+          : '';
         return `<tr class="border-t border-slate-100 text-sm">
           <td class="py-2 px-2 w-10"><input type="checkbox" class="collect-post-check" data-post-log-id="${pid}" data-user-id="${uid}"></td>
           <td class="py-2 px-3 whitespace-nowrap text-slate-600 text-xs">${escapeHtml(t)}</td>
@@ -3632,7 +3659,12 @@ async function loadLeadCollectTab() {
           <td class="py-2 px-3 text-xs"><a class="text-red-600 hover:underline break-all" href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">เปิดโพสต์</a></td>
           <td class="py-2 px-3 text-xs text-slate-500 font-mono">${escapeHtml(r.job_id || '-')}</td>
           <td class="py-2 px-3 text-center text-xs">${escapeHtml(String(r.comment_count ?? 0))}</td>
-          <td class="py-2 px-3 text-xs text-slate-600 max-w-[10rem] truncate" title="${escapeHtml(r.customer_phone || '')}">${escapeHtml(r.customer_phone || '-')}</td>
+          <td class="py-2 px-3 text-xs text-slate-600 align-top">
+            <div class="flex items-start gap-2 min-w-0 max-w-[min(18rem,42vw)]">
+              <span class="break-words min-w-0 flex-1" title="${escapeHtml(phoneRaw)}">${escapeHtml(phoneDisplay)}</span>
+              ${copyBtn}
+            </div>
+          </td>
         </tr>`;
       }).join('');
       parts.push(`<details class="border border-slate-200 rounded-lg mb-2 overflow-hidden" open>
